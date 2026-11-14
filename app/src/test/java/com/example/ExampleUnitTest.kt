@@ -6,9 +6,11 @@ import com.example.model.IncomingOrderCard
 import com.example.model.MerchantPoint
 import com.example.model.OrderGrade
 import com.example.model.RiderPlatform
+import com.example.service.GpsKalmanFilter
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.abs
 
 class ExampleUnitTest {
     @Test
@@ -54,5 +56,26 @@ class ExampleUnitTest {
         assertEquals(13.8750, cLat, 0.0001)
         assertEquals(100.4150, cLng, 0.0001)
         assertTrue(avgDist > 0.0)
+    }
+
+    @Test
+    fun gpsKalmanFilter_dampensSuddenCoordinateSpikes() {
+        val filter = GpsKalmanFilter(processNoiseMetersPerSec = 2.0f)
+        val anchorLat = 13.8768
+        val anchorLng = 100.4113
+
+        // Initial accurate fix
+        val (initLat, initLng) = filter.process(anchorLat, anchorLng, accuracyMeters = 2.5f, timestampMillis = 1000L)
+        assertEquals(anchorLat, initLat, 1e-6)
+        assertEquals(anchorLng, initLng, 1e-6)
+
+        // Sudden noisy spike 1 second later with poor accuracy (18m)
+        val spikeLat = anchorLat + 0.0020
+        val spikeLng = anchorLng + 0.0020
+        val (smoothedLat, smoothedLng) = filter.process(spikeLat, spikeLng, accuracyMeters = 18.0f, timestampMillis = 2000L)
+
+        // Smoothed position should stay much closer to anchor than raw spike
+        assertTrue(abs(smoothedLat - anchorLat) < abs(spikeLat - anchorLat) * 0.25)
+        assertTrue(abs(smoothedLng - anchorLng) < abs(spikeLng - anchorLng) * 0.25)
     }
 }

@@ -20,6 +20,7 @@ import com.example.model.RiderPlatform
 import com.example.model.SatelliteSnr
 import com.example.model.TacticalLockMode
 import com.example.model.TacticalTab
+import com.example.service.LocationService
 import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CrimsonNeon
 import com.example.ui.theme.CrimsonRed
@@ -116,6 +117,7 @@ class FixPointViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(FixPointUiState())
     val uiState: StateFlow<FixPointUiState> = _uiState.asStateFlow()
 
+    private var locationService: LocationService? = null
     private var locationManager: LocationManager? = null
     private var locationListener: LocationListener? = null
 
@@ -616,15 +618,44 @@ class FixPointViewModel : ViewModel() {
     @SuppressLint("MissingPermission")
     fun bindHardwareLocationUpdates(context: Context, granted: Boolean) {
         _uiState.update { it.copy(hasLocationPermission = granted) }
-        if (!granted) return
+        if (!granted) {
+            locationService?.stopLocationUpdates()
+            return
+        }
 
         try {
+            // 1. Primary: FusedLocationProviderClient + 2D GpsKalmanFilter via LocationService
+            val service = locationService ?: LocationService(context).also { locationService = it }
+            val intervalMs = (1000L / _uiState.value.selectedPlatform.gpsHz.coerceIn(1, 15)).coerceAtLeast(250L)
+            service.startLocationUpdates(
+                intervalMillis = intervalMs,
+                minUpdateIntervalMillis = (intervalMs / 2).coerceAtLeast(150L)
+            ) { update ->
+                _uiState.update { state ->
+                    val effectiveLat = if (state.isFixPointLocked) update.smoothedLat else update.rawLat
+                    val effectiveLng = if (state.isFixPointLocked) update.smoothedLng else update.rawLng
+                    state.copy(
+                        isUsingRealHardwareGps = true,
+                        riderLat = effectiveLat,
+                        riderLng = effectiveLng,
+                        rawUnfilteredLat = update.rawLat,
+                        rawUnfilteredLng = update.rawLng,
+                        accuracyMeters = update.accuracyMeters,
+                        kalmanDriftSuppressedMeters = if (update.driftSuppressedMeters > 0.1f) {
+                            ((update.driftSuppressedMeters * 10f).roundToInt() / 10f)
+                        } else {
+                            state.kalmanDriftSuppressedMeters
+                        }
+                    )
+                }
+            }
+
+            // 2. Fallback: Hardware LocationManager for devices without Google Play Services
             val mgr = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
             locationManager = mgr
             val listener = object : LocationListener {
                 override fun onLocationChanged(location: Location) {
                     _uiState.update { state ->
-                        // Blend real GPS with Kalman stabilizer
                         val kalman = state.lockMode.kalmanGain
                         val smoothedLat = if (state.isFixPointLocked) {
                             state.riderLat * kalman + location.latitude * (1f - kalman)
@@ -668,6 +699,7 @@ class FixPointViewModel : ViewModel() {
     override fun onCleared() {
         super.onCleared()
         try {
+            locationService?.stopLocationUpdates()
             locationListener?.let { locationManager?.removeUpdates(it) }
         } catch (_: Throwable) {}
     }
