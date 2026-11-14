@@ -4,10 +4,20 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.location.GnssStatus
 import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.os.Build
+import android.os.Bundle
 import android.os.Looper
 import androidx.core.content.ContextCompat
 import com.example.model.GeoMath
+import com.example.model.SatelliteBarItem
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -31,20 +41,19 @@ data class SmoothedLocationUpdate(
     val smoothedLat: Double,
     val smoothedLng: Double,
     val accuracyMeters: Float,
+    val altitudeMeters: Double?,
     val kalmanGain: Float,
     val driftSuppressedMeters: Float,
     val speedMps: Float,
-    val bearingDeg: Float,
+    val bearingDeg: Float?,
     val timestampMillis: Long
 )
 
 /**
  * 2D Kalman Filter for GPS coordinate stabilization and anti-drift smoothing.
- * Models position uncertainty (variance) over time and blends noisy GNSS measurements
- * using optimal Kalman Gain K = P / (P + R).
  */
 class GpsKalmanFilter(
-    private var processNoiseMetersPerSec: Float = 2.2f
+    private var processNoiseMetersPerSec: Float = 2.0f
 ) {
     private var isInitialized: Boolean = false
     private var estimatedLat: Double = 0.0
@@ -70,7 +79,7 @@ class GpsKalmanFilter(
         accuracyMeters: Float,
         timestampMillis: Long
     ): Pair<Double, Double> {
-        val safeAccuracy = max(accuracyMeters, 1.5f)
+        val safeAccuracy = max(accuracyMeters, 1.0f)
 
         if (!isInitialized || variance < 0f) {
             estimatedLat = measuredLat
@@ -82,7 +91,6 @@ class GpsKalmanFilter(
             return Pair(estimatedLat, estimatedLng)
         }
 
-        // 1. Time update (Prediction step): increase variance based on elapsed time and process noise Q
         val dtMillis = (timestampMillis - lastTimestampMillis).coerceAtLeast(0L)
         if (dtMillis > 0L) {
             val dtSeconds = dtMillis / 1000.0f
@@ -90,16 +98,12 @@ class GpsKalmanFilter(
             lastTimestampMillis = timestampMillis
         }
 
-        // 2. Measurement update (Correction step): compute Kalman Gain K = P / (P + R)
         val measurementVariance = safeAccuracy * safeAccuracy
         val kalmanGain = (variance / (variance + measurementVariance)).coerceIn(0.02f, 0.98f)
         lastKalmanGain = kalmanGain
 
-        // Update state estimate
         estimatedLat += kalmanGain * (measuredLat - estimatedLat)
         estimatedLng += kalmanGain * (measuredLng - estimatedLng)
-
-        // Update error covariance P = (1 - K) * P
         variance = (1.0f - kalmanGain) * variance
 
         return Pair(estimatedLat, estimatedLng)
@@ -107,8 +111,8 @@ class GpsKalmanFilter(
 }
 
 /**
- * LocationService handling Google Play Services [FusedLocationProviderClient] for continuous,
- * high-accuracy GPS tracking combined with [GpsKalmanFilter] anti-drift stabilization.
+ * LocationService handling [FusedLocationProviderClient], hardware [LocationManager],
+ * [GnssStatus.Callback] satellite telemetry, and hardware [SensorManager] compass azimuth.
  */
 class LocationService(
     context: Context,
@@ -117,13 +121,29 @@ class LocationService(
     private val appContext: Context = context.applicationContext
     private val fusedLocationClient: FusedLocationProviderClient =
         LocationServices.getFusedLocationProviderClient(appContext)
+    private val locationManager: LocationManager? =
+        appContext.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+    private val sensorManager: SensorManager? =
+        appContext.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
 
     private val kalmanFilter = GpsKalmanFilter(processNoiseMetersPerSec)
 
     private val _latestLocation = MutableStateFlow<SmoothedLocationUpdate?>(null)
     val latestLocation: StateFlow<SmoothedLocationUpdate?> = _latestLocation.asStateFlow()
 
-    private var activeCallback: LocationCallback? = null
+    private val _compassAzimuthDeg = MutableStateFlow<Float?>(null)
+    val compassAzimuthDeg: StateFlow<Float?> = _compassAzimuthDeg.asStateFlow()
+
+    private val _gnssSatellites = MutableStateFlow<Triple<Int, Int, List<SatelliteBarItem>>>(
+        Triple(0, 0, emptyList())
+    )
+    val gnssSatellites: StateFlow<Triple<Int, Int, List<SatelliteBarItem>>> =
+        _gnssSatellites.asStateFlow()
+
+    private var activeFusedCallback: LocationCallback? = null
+    private var activeLocationListener: LocationListener? = null
+    private var activeGnssCallback: GnssStatus.Callback? = null
+    private var activeSensorListener: SensorEventListener? = null
 
     fun hasLocationPermission(): Boolean {
         val fine = ContextCompat.checkSelfPermission(
@@ -137,18 +157,10 @@ class LocationService(
         return fine || coarse
     }
 
-    fun setKalmanProcessNoise(qMetersPerSec: Float) {
-        kalmanFilter.setProcessNoise(qMetersPerSec)
-    }
-
     fun resetKalmanFilter() {
         kalmanFilter.reset()
     }
 
-    /**
-     * Starts continuous high-accuracy location updates via [FusedLocationProviderClient]
-     * and invokes [onUpdate] with each Kalman-smoothed GPS fix.
-     */
     @SuppressLint("MissingPermission")
     fun startLocationUpdates(
         intervalMillis: Long = 1000L,
@@ -158,12 +170,13 @@ class LocationService(
         if (!hasLocationPermission()) return
         stopLocationUpdates()
 
+        // 1. FusedLocationProviderClient
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMillis)
             .setMinUpdateIntervalMillis(minUpdateIntervalMillis)
             .setWaitForAccurateLocation(false)
             .build()
 
-        val callback = object : LocationCallback() {
+        val fusedCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 val location: Location = result.lastLocation ?: return
                 val smoothedUpdate = processRawLocation(location)
@@ -171,12 +184,12 @@ class LocationService(
                 onUpdate(smoothedUpdate)
             }
         }
+        activeFusedCallback = fusedCallback
 
-        activeCallback = callback
         try {
             fusedLocationClient.requestLocationUpdates(
                 request,
-                callback,
+                fusedCallback,
                 Looper.getMainLooper()
             )
             fusedLocationClient.lastLocation.addOnSuccessListener { lastLoc ->
@@ -186,16 +199,114 @@ class LocationService(
                     onUpdate(initialUpdate)
                 }
             }
-        } catch (_: SecurityException) {
-            // Permission revoked at runtime
-        } catch (_: Throwable) {
-            // Google Play Services unavailable on device/test environment
-        }
+        } catch (_: Throwable) {}
+
+        // 2. Hardware LocationManager + GnssStatus for direct satellite counts & SNR
+        try {
+            val mgr = locationManager
+            if (mgr != null) {
+                val listener = object : LocationListener {
+                    override fun onLocationChanged(location: Location) {
+                        val smoothedUpdate = processRawLocation(location)
+                        _latestLocation.value = smoothedUpdate
+                        onUpdate(smoothedUpdate)
+                    }
+
+                    @Deprecated("Deprecated in Android API")
+                    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                    override fun onProviderEnabled(provider: String) {}
+                    override fun onProviderDisabled(provider: String) {}
+                }
+                activeLocationListener = listener
+
+                for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
+                    if (mgr.isProviderEnabled(provider)) {
+                        mgr.requestLocationUpdates(
+                            provider,
+                            intervalMillis,
+                            0f,
+                            listener,
+                            Looper.getMainLooper()
+                        )
+                    }
+                    val lastKnown = mgr.getLastKnownLocation(provider)
+                    if (lastKnown != null && _latestLocation.value == null) {
+                        val initialUpdate = processRawLocation(lastKnown)
+                        _latestLocation.value = initialUpdate
+                        onUpdate(initialUpdate)
+                    }
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    val gnssCb = object : GnssStatus.Callback() {
+                        override fun onSatelliteStatusChanged(status: GnssStatus) {
+                            val total = status.satelliteCount
+                            var used = 0
+                            val bars = mutableListOf<SatelliteBarItem>()
+                            for (i in 0 until total) {
+                                val isUsed = status.usedInFix(i)
+                                if (isUsed) used++
+                                val label = when (status.getConstellationType(i)) {
+                                    GnssStatus.CONSTELLATION_GPS -> "GPS"
+                                    GnssStatus.CONSTELLATION_GLONASS -> "GLO"
+                                    GnssStatus.CONSTELLATION_GALILEO -> "GAL"
+                                    GnssStatus.CONSTELLATION_BEIDOU -> "BDS"
+                                    GnssStatus.CONSTELLATION_QZSS -> "QZS"
+                                    else -> "GNSS"
+                                }
+                                bars.add(
+                                    SatelliteBarItem(
+                                        svid = status.getSvid(i),
+                                        constellationLabel = label,
+                                        cn0DbHz = status.getCn0DbHz(i),
+                                        usedInFix = isUsed
+                                    )
+                                )
+                            }
+                            _gnssSatellites.value = Triple(
+                                used,
+                                total,
+                                bars.sortedByDescending { it.cn0DbHz }.take(12)
+                            )
+                        }
+                    }
+                    activeGnssCallback = gnssCb
+                    mgr.registerGnssStatusCallback(gnssCb, null)
+                }
+            }
+        } catch (_: Throwable) {}
+
+        // 3. Hardware Compass / Rotation Vector Sensor for real-time heading
+        startCompassSensor()
     }
 
-    /**
-     * Cold [Flow] streaming continuous high-accuracy Kalman-smoothed GPS updates.
-     */
+    private fun startCompassSensor() {
+        try {
+            val sm = sensorManager ?: return
+            val rotationSensor = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+            if (rotationSensor != null) {
+                val listener = object : SensorEventListener {
+                    private val rotationMatrix = FloatArray(9)
+                    private val orientationAngles = FloatArray(3)
+
+                    override fun onSensorChanged(event: SensorEvent?) {
+                        if (event?.sensor?.type == Sensor.TYPE_ROTATION_VECTOR) {
+                            SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+                            SensorManager.getOrientation(rotationMatrix, orientationAngles)
+                            val azimuthRad = orientationAngles[0].toDouble()
+                            val azimuthDeg = ((Math.toDegrees(azimuthRad) + 360.0) % 360.0).toFloat()
+                            _compassAzimuthDeg.value = azimuthDeg
+                        }
+                    }
+
+                    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+                }
+                activeSensorListener = listener
+                sm.registerListener(listener, rotationSensor, SensorManager.SENSOR_DELAY_UI)
+            }
+        } catch (_: Throwable) {}
+    }
+
     @SuppressLint("MissingPermission")
     fun getLocationUpdatesFlow(
         intervalMillis: Long = 1000L,
@@ -239,14 +350,30 @@ class LocationService(
     }
 
     fun stopLocationUpdates() {
-        val cb = activeCallback ?: return
-        try {
-            fusedLocationClient.removeLocationUpdates(cb)
-        } catch (_: Throwable) {}
-        activeCallback = null
+        activeFusedCallback?.let {
+            runCatching { fusedLocationClient.removeLocationUpdates(it) }
+        }
+        activeFusedCallback = null
+
+        activeLocationListener?.let {
+            runCatching { locationManager?.removeUpdates(it) }
+        }
+        activeLocationListener = null
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            activeGnssCallback?.let {
+                runCatching { locationManager?.unregisterGnssStatusCallback(it) }
+            }
+        }
+        activeGnssCallback = null
+
+        activeSensorListener?.let {
+            runCatching { sensorManager?.unregisterListener(it) }
+        }
+        activeSensorListener = null
     }
 
-    private fun processRawLocation(location: Location): SmoothedLocationUpdate {
+    fun processRawLocation(location: Location): SmoothedLocationUpdate {
         val ts = if (location.time > 0L) location.time else System.currentTimeMillis()
         val (smoothedLat, smoothedLng) = kalmanFilter.process(
             measuredLat = location.latitude,
@@ -266,11 +393,12 @@ class LocationService(
             rawLng = location.longitude,
             smoothedLat = smoothedLat,
             smoothedLng = smoothedLng,
-            accuracyMeters = location.accuracy.coerceIn(1.5f, 30.0f),
+            accuracyMeters = location.accuracy,
+            altitudeMeters = if (location.hasAltitude()) location.altitude else null,
             kalmanGain = kalmanFilter.lastKalmanGain,
             driftSuppressedMeters = driftMeters,
-            speedMps = location.speed,
-            bearingDeg = location.bearing,
+            speedMps = if (location.hasSpeed()) location.speed else 0f,
+            bearingDeg = if (location.hasBearing()) location.bearing else null,
             timestampMillis = ts
         )
     }

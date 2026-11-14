@@ -1,214 +1,168 @@
 package com.example.model
 
-import androidx.compose.ui.graphics.Color
-import com.example.ui.theme.AmberWarning
-import com.example.ui.theme.CrimsonNeon
-import com.example.ui.theme.CrimsonRed
-import com.example.ui.theme.CyanTelemetry
-import com.example.ui.theme.EmeraldSRank
+import org.json.JSONArray
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-enum class TacticalTab(val titleTh: String, val titleEn: String, val badgeCode: String) {
-    FIXPOINT_CORE("เรดาร์ล็อคหมุด", "FIXPOINT CORE", "CORE-01"),
-    SMART_FILTER("สแกนคัดงาน", "SMART FILTER", "SCAN-02"),
-    HOTZONE_PINS("คลังหมุดทองคำ", "HOTZONE PINS", "PINS-03"),
-    FLOATING_HUD("HUD & สัญญาณ", "HUD & GNSS", "DIAG-04")
+enum class AppScreen(val titleTh: String) {
+    HOME("หน้าหลัก"),
+    SAVED_LOCATIONS("พิกัดที่บันทึก"),
+    SETTINGS("การตั้งค่า")
 }
 
-enum class RiderPlatform(
-    val displayName: String,
-    val shortTag: String,
-    val recPickupKm: Float,
-    val recDropoffKm: Float,
-    val gpsHz: Int,
-    val accentColor: Color,
-    val algorithmNote: String
-) {
-    LINE_MAN(
-        displayName = "LINE MAN Rider",
-        shortTag = "LM",
-        recPickupKm = 0.7f,
-        recDropoffKm = 2.0f,
-        gpsHz = 10,
-        accentColor = Color(0xFF10B981),
-        algorithmNote = "เน้นรัศมีใกล้ร้าน < 700m + ตรึงพิกัดนิ่งหน้าดงร้านอาหาร"
-    ),
-    GRAB(
-        displayName = "Grab Driver",
-        shortTag = "GRAB",
-        recPickupKm = 0.9f,
-        recDropoffKm = 2.5f,
-        gpsHz = 8,
-        accentColor = Color(0xFF22C55E),
-        algorithmNote = "คำนวณจุด Batch ร้านค้าใกล้เคียง + กันงานยิงยาวออกนอกโซน"
-    ),
-    SHOPEE_FOOD(
-        displayName = "ShopeeFood",
-        shortTag = "SPF",
-        recPickupKm = 0.6f,
-        recDropoffKm = 1.8f,
-        gpsHz = 12,
-        accentColor = Color(0xFFF97316),
-        algorithmNote = "บีบรัศมี Micro-Accuracy สูงสุด เน้นงานสั้นทำรอบไว"
-    ),
-    LALAMOVE(
-        displayName = "Lalamove",
-        shortTag = "LLM",
-        recPickupKm = 1.2f,
-        recDropoffKm = 3.5f,
-        gpsHz = 6,
-        accentColor = Color(0xFFF59E0B),
-        algorithmNote = "สแกนความคุ้มค่า บาท/กม. รวมระยะตีรถกลับหมุดหลัก"
-    ),
-    ALL_APPS(
-        displayName = "All Apps (Multi-App)",
-        shortTag = "ALL",
-        recPickupKm = 0.8f,
-        recDropoffKm = 2.0f,
-        gpsHz = 15,
-        accentColor = CrimsonRed,
-        algorithmNote = "เปิดโหมด Hybrid 15Hz รองรับการเปิดหลายแอปพร้อมกัน"
-    )
+enum class GpsLockState(val labelTh: String, val subLabelTh: String) {
+    OFF("ปิดการทำงาน", "ระบบล็อกสัญญาณอยู่ในสถานะพัก"),
+    SEARCHING("กำลังค้นหาสัญญาณ", "กำลังสแกนและเชื่อมต่อดาวเทียม GNSS"),
+    LOCKED("ล็อกสัญญาณแล้ว", "ตรึงสัญญาณพิกัดต่อเนื่องผ่านบริการเบื้องหลัง")
 }
 
-enum class TacticalLockMode(
-    val titleEn: String,
+enum class MeasurementUnit(
     val titleTh: String,
-    val subtitle: String,
-    val kalmanGain: Float,
-    val targetAccuracyMeters: Float
+    val distanceUnitTh: String,
+    val speedUnitTh: String
 ) {
-    PIN_CENTER_MICRO(
-        titleEn = "Pin-Center Micro Lock",
-        titleTh = "ตรึงหมุดความถี่สูง (Micro-Accuracy)",
-        subtitle = "บีบรัศมี Accuracy แคบสุด (±1.8m) + WakeLock กันสัญญาณหลับเพื่อแย่งงานร้านติดหมุด",
-        kalmanGain = 0.88f,
-        targetAccuracyMeters = 1.8f
-    ),
-    MERCHANT_CENTROID(
-        titleEn = "Merchant Centroid Stabilizer",
-        titleTh = "ล็อคจุดกึ่งกลางดงร้าน (Kalman Anti-Drift)",
-        subtitle = "คำนวณพิกัดเฉลี่ยระหว่างร้านฮิตรอบหมุด ลดอาการพิกัดกระโดดใต้อาคารหรือชายคาห้าง",
-        kalmanGain = 0.94f,
-        targetAccuracyMeters = 2.4f
-    ),
-    AUTO_LOOP_COMPASS(
-        titleEn = "Auto Loop-Back Compass",
-        titleTh = "เข็มทิศดึงกลับหมุดอัตโนมัติ (Loop-Back)",
-        subtitle = "แสดงเวกเตอร์เข็มทิศและเวลาเดินทางตีรถกลับเข้าหมุดหลักทันทีหลังส่งงานเสร็จ",
-        kalmanGain = 0.82f,
-        targetAccuracyMeters = 2.9f
-    )
+    METRIC("ระบบเมตริก", "เมตร", "กม./ชม."),
+    IMPERIAL("ระบบอิมพีเรียล", "ฟุต", "ไมล์/ชม."),
+    NAUTICAL("ระบบเดินเรือและอากาศยาน", "เมตร", "นอต")
 }
 
-data class HotzonePin(
-    val id: String,
-    val name: String,
-    val zoneTag: String,
-    val lat: Double,
-    val lng: Double,
-    val merchantCount: Int,
-    val avgOrderRate: String,
-    val description: String,
-    val isCustom: Boolean = false
-)
-
-data class MerchantPoint(
-    val id: String,
-    val name: String,
-    val category: String,
-    val lat: Double,
-    val lng: Double,
-    val weight: Float = 1.0f
-)
-
-enum class OrderGrade(
-    val badgeTitle: String,
-    val badgeSubtitle: String,
-    val color: Color
+enum class UpdateFrequency(
+    val titleTh: String,
+    val detailTh: String,
+    val intervalMillis: Long,
+    val minIntervalMillis: Long
 ) {
-    S_RANK_LOOP(
-        badgeTitle = "S-RANK: รับเลย! รับใกล้-ส่งวนหมุด",
-        badgeSubtitle = "จุดรับและจุดส่งอยู่ในวงแหวนยุทธวิธี ตีรถกลับหมุดไว",
-        color = EmeraldSRank
-    ),
-    A_RANK_IN_ZONE(
-        badgeTitle = "A-RANK: ในโซนรับได้ (ระวังระยะรับ/ส่ง)",
-        badgeSubtitle = "อยู่ในเกณฑ์อนุโลมแต่ควรเช็คค่าตอบแทนต่อกิโลเมตร",
-        color = CrimsonNeon
-    ),
-    REJECT_OUT_OF_ZONE(
-        badgeTitle = "REJECT / WARNING: จุดส่งฉีกออกนอกหมุด!",
-        badgeSubtitle = "เสี่ยงตีรถเปล่ายาวหรือหลุดออกนอกโซนทำรอบ",
-        color = AmberWarning
-    )
+    HIGH_PRECISION("ความถี่สูงสุด (0.5 วินาที)", "อัปเดตพิกัดทุก 0.5 วินาที ความแม่นยำสูงสุด", 500L, 250L),
+    STANDARD("มาตรฐาน (1 วินาที)", "อัปเดตพิกัดทุก 1 วินาที สมดุลความแม่นยำและพลังงาน", 1000L, 500L),
+    BATTERY_SAVER("ประหยัดพลังงาน (3 วินาที)", "อัปเดตพิกัดทุก 3 วินาที สำหรับเปิดค้างเวลานาน", 3000L, 1500L)
 }
 
-data class IncomingOrderCard(
+enum class CoordinateFormat(val titleTh: String) {
+    DECIMAL("ทศนิยมมาตรฐาน (DDD.DDDDDD°)"),
+    DMS("องศา ลิปดา ฟิลิปดา (DDD° MM' SS.S\")")
+}
+
+data class SavedLocationItem(
     val id: String,
-    val platform: RiderPlatform,
-    val merchantName: String,
-    val dropoffName: String,
-    val pickupLat: Double,
-    val pickupLng: Double,
-    val dropoffLat: Double,
-    val dropoffLng: Double,
-    val payoutBaht: Int,
-    val estMinutes: Int,
-    val crossesBridgeOrZone: Boolean = false
+    val name: String,
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Float?,
+    val altitudeMeters: Double?,
+    val timestampMillis: Long
+) {
+    fun formattedTimestamp(): String {
+        val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.US)
+        return sdf.format(Date(timestampMillis))
+    }
+
+    companion object {
+        private const val RECORD_SEP = "\u001E"
+        private const val FIELD_SEP = "\u001F"
+
+        fun serializeList(items: List<SavedLocationItem>): String {
+            return items.joinToString(RECORD_SEP) { item ->
+                val safeName = item.name.replace(RECORD_SEP, " ").replace(FIELD_SEP, " ")
+                listOf(
+                    item.id,
+                    safeName,
+                    item.latitude.toString(),
+                    item.longitude.toString(),
+                    item.accuracyMeters?.toString() ?: "",
+                    item.altitudeMeters?.toString() ?: "",
+                    item.timestampMillis.toString()
+                ).joinToString(FIELD_SEP)
+            }
+        }
+
+        fun deserializeList(raw: String?): List<SavedLocationItem> {
+            if (raw.isNullOrBlank()) return emptyList()
+            return raw.split(RECORD_SEP).mapNotNull { record ->
+                val parts = record.split(FIELD_SEP)
+                if (parts.size < 7) return@mapNotNull null
+                val lat = parts[2].toDoubleOrNull() ?: return@mapNotNull null
+                val lng = parts[3].toDoubleOrNull() ?: return@mapNotNull null
+                val acc = parts[4].toFloatOrNull()
+                val alt = parts[5].toDoubleOrNull()
+                val ts = parts[6].toLongOrNull() ?: System.currentTimeMillis()
+                SavedLocationItem(
+                    id = parts[0].ifBlank { "LOC-$ts" },
+                    name = parts[1].ifBlank { "ตำแหน่งที่บันทึก" },
+                    latitude = lat,
+                    longitude = lng,
+                    accuracyMeters = acc,
+                    altitudeMeters = alt,
+                    timestampMillis = ts
+                )
+            }
+        }
+    }
+}
+
+data class SatelliteBarItem(
+    val svid: Int,
+    val constellationLabel: String,
+    val cn0DbHz: Float,
+    val usedInFix: Boolean
 )
 
-data class OrderEvaluation(
-    val order: IncomingOrderCard,
-    val pickupToPinKm: Double,
-    val dropoffToPinKm: Double,
-    val orderTripKm: Double,
-    val loopBackKm: Double,
-    val totalLoopKm: Double,
-    val bahtPerLoopKm: Double,
-    val isPickupWithinRadius: Boolean,
-    val isDropoffWithinRadius: Boolean,
-    val grade: OrderGrade,
-    val verdictDetail: String
-)
+data class LiveGnssTelemetry(
+    val hasFix: Boolean = false,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val rawLatitude: Double? = null,
+    val rawLongitude: Double? = null,
+    val accuracyMeters: Float? = null,
+    val altitudeMeters: Double? = null,
+    val speedMetersPerSec: Float? = null,
+    val bearingDegrees: Float? = null,
+    val compassAzimuthDegrees: Float? = null,
+    val satellitesUsedInFix: Int = 0,
+    val satellitesVisible: Int = 0,
+    val averageSnrDbHz: Float = 0f,
+    val satelliteBars: List<SatelliteBarItem> = emptyList(),
+    val lastFixTimestampMillis: Long? = null
+) {
+    val effectiveDirectionDegrees: Float?
+        get() = when {
+            speedMetersPerSec != null && speedMetersPerSec > 0.5f && bearingDegrees != null && bearingDegrees > 0f ->
+                bearingDegrees
+            compassAzimuthDegrees != null -> compassAzimuthDegrees
+            bearingDegrees != null && bearingDegrees > 0f -> bearingDegrees
+            else -> null
+        }
 
-data class AutoFilterRules(
-    val notifyOnlyWithinDropoffRadius: Boolean = true,
-    val blockCrossBridgeOrZone: Boolean = true,
-    val shortLoopPriority: Boolean = true,
-    val minBahtPerLoopKm: Float = 12.0f
-)
+    val signalQualityLabelTh: String
+        get() = when {
+            !hasFix && satellitesUsedInFix == 0 && averageSnrDbHz <= 0f -> "ไม่มีสัญญาณ"
+            averageSnrDbHz >= 38f || (accuracyMeters != null && accuracyMeters <= 4.5f) -> "ดีเยี่ยม"
+            averageSnrDbHz >= 30f || (accuracyMeters != null && accuracyMeters <= 10f) -> "ดี"
+            averageSnrDbHz >= 22f || (accuracyMeters != null && accuracyMeters <= 20f) -> "ปานกลาง"
+            else -> "อ่อน"
+        }
 
-data class SatelliteSnr(
-    val constellation: String,
-    val svId: String,
-    val snrDbHz: Int,
-    val usedInFix: Boolean,
-    val color: Color
-)
-
-data class LockDriftLog(
-    val id: String,
-    val timestamp: String,
-    val eventTitle: String,
-    val pinName: String,
-    val pickupDistKm: Double,
-    val dropoffDistKm: Double,
-    val statusTag: String,
-    val isPositive: Boolean
-)
+    val signalQualityFraction: Float
+        get() = when {
+            averageSnrDbHz > 0f -> (averageSnrDbHz / 45f).coerceIn(0.08f, 1.0f)
+            hasFix && accuracyMeters != null -> (1f - (accuracyMeters / 40f)).coerceIn(0.15f, 1.0f)
+            satellitesVisible > 0 -> (satellitesUsedInFix.toFloat() / satellitesVisible.coerceAtLeast(1)).coerceIn(0.1f, 0.7f)
+            else -> 0f
+        }
+}
 
 object GeoMath {
     private const val EARTH_RADIUS_KM = 6371.0
 
-    /**
-     * Real Haversine distance formula returning distance in kilometers.
-     */
     fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val dLat = Math.toRadians(lat2 - lat1)
         val dLon = Math.toRadians(lon2 - lon1)
@@ -216,127 +170,83 @@ object GeoMath {
         val rLat2 = Math.toRadians(lat2)
 
         val a = sin(dLat / 2).pow(2.0) +
-                sin(dLon / 2).pow(2.0) * cos(rLat1) * cos(rLat2)
+            sin(dLon / 2).pow(2.0) * cos(rLat1) * cos(rLat2)
         val c = 2 * atan2(sqrt(a), sqrt(1 - a))
         return EARTH_RADIUS_KM * c
     }
 
-    /**
-     * Computes compass bearing in degrees (0..360) from point 1 to point 2.
-     */
-    fun bearingDegrees(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
-        val phi1 = Math.toRadians(lat1)
-        val phi2 = Math.toRadians(lat2)
-        val deltaLon = Math.toRadians(lon2 - lon1)
-
-        val y = sin(deltaLon) * cos(phi2)
-        val x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(deltaLon)
-        val theta = atan2(y, x)
-        return ((Math.toDegrees(theta) + 360.0) % 360.0).toFloat()
-    }
-
-    /**
-     * Converts bearing degrees to Thai/English tactical cardinal direction.
-     */
-    fun cardinalDirection(bearing: Float): String {
+    fun cardinalDirectionTh(degrees: Float?): String {
+        if (degrees == null) return "—"
+        val normalized = ((degrees % 360f) + 360f) % 360f
         val dirs = listOf(
-            "N (เหนือ)", "NE (ตะวันออกเฉียงเหนือ)", "E (ตะวันออก)", "SE (ตะวันออกเฉียงใต้)",
-            "S (ใต้)", "SW (ตะวันตกเฉียงใต้)", "W (ตะวันตก)", "NW (ตะวันตกเฉียงเหนือ)"
+            "เหนือ (N)",
+            "ตะวันออกเฉียงเหนือ (NE)",
+            "ตะวันออก (E)",
+            "ตะวันออกเฉียงใต้ (SE)",
+            "ใต้ (S)",
+            "ตะวันตกเฉียงใต้ (SW)",
+            "ตะวันตก (W)",
+            "ตะวันตกเฉียงเหนือ (NW)"
         )
-        val idx = (((bearing + 22.5f) % 360f) / 45f).toInt().coerceIn(0, 7)
-        return dirs[idx]
+        val index = (((normalized + 22.5f) % 360f) / 45f).toInt().coerceIn(0, 7)
+        return "${normalized.roundToInt()}° ${dirs[index]}"
     }
 
-    /**
-     * Calculates Golden Centroid (weighted average coordinate) of merchants and average distance to all merchants.
-     */
-    fun calculateGoldenCentroid(merchants: List<MerchantPoint>): Triple<Double, Double, Double> {
-        if (merchants.isEmpty()) return Triple(13.8768, 100.4113, 0.0)
-        var sumLat = 0.0
-        var sumLng = 0.0
-        var totalWeight = 0.0
-        for (m in merchants) {
-            sumLat += m.lat * m.weight
-            sumLng += m.lng * m.weight
-            totalWeight += m.weight
-        }
-        val centroidLat = sumLat / totalWeight
-        val centroidLng = sumLng / totalWeight
-        val avgDistKm = merchants.map {
-            haversineKm(centroidLat, centroidLng, it.lat, it.lng)
-        }.average()
-        return Triple(centroidLat, centroidLng, avgDistKm)
-    }
-
-    /**
-     * Evaluates an IncomingOrderCard against the active Pin, Dual Radii, and Auto-Filter Rules.
-     */
-    fun evaluateOrder(
-        order: IncomingOrderCard,
-        pinLat: Double,
-        pinLng: Double,
-        maxPickupRadiusKm: Float,
-        maxDropoffRadiusKm: Float,
-        rules: AutoFilterRules
-    ): OrderEvaluation {
-        val pickupToPin = haversineKm(pinLat, pinLng, order.pickupLat, order.pickupLng)
-        val dropoffToPin = haversineKm(pinLat, pinLng, order.dropoffLat, order.dropoffLng)
-        // Road curvature multiplier (~1.22x straight line for urban Bangkok/Nonthaburi streets)
-        val orderTripKm = haversineKm(order.pickupLat, order.pickupLng, order.dropoffLat, order.dropoffLng) * 1.22
-        val loopBackKm = dropoffToPin * 1.20
-        val totalLoopKm = (pickupToPin + orderTripKm + loopBackKm).coerceAtLeast(0.25)
-        val bahtPerLoopKm = order.payoutBaht.toDouble() / totalLoopKm
-
-        val pickupOk = pickupToPin <= maxPickupRadiusKm.toDouble()
-        val dropoffOk = dropoffToPin <= maxDropoffRadiusKm.toDouble()
-        val bridgeBlocked = rules.blockCrossBridgeOrZone && order.crossesBridgeOrZone
-        val shortLoopOk = !rules.shortLoopPriority || totalLoopKm <= (maxDropoffRadiusKm * 2.4f)
-
-        val grade = when {
-            bridgeBlocked -> OrderGrade.REJECT_OUT_OF_ZONE
-            pickupOk && dropoffOk && shortLoopOk && bahtPerLoopKm >= rules.minBahtPerLoopKm -> OrderGrade.S_RANK_LOOP
-            dropoffOk && pickupToPin <= (maxPickupRadiusKm * 1.35f) -> OrderGrade.A_RANK_IN_ZONE
-            else -> OrderGrade.REJECT_OUT_OF_ZONE
-        }
-
-        val detail = when (grade) {
-            OrderGrade.S_RANK_LOOP ->
-                "[S-RANK: รับเลย! รับใกล้-ส่งวนหมุด] ร้านห่างหมุด ${formatKm(pickupToPin)} กม. • จุดส่งห่างหมุด ${formatKm(dropoffToPin)} กม."
-            OrderGrade.A_RANK_IN_ZONE ->
-                "[A-RANK: ในโซน] จุดส่งห่างหมุด ${formatKm(dropoffToPin)} กม. • คุ้มค่ารอบวิ่ง ${format1Dec(bahtPerLoopKm)} ฿/กม."
-            OrderGrade.REJECT_OUT_OF_ZONE -> {
-                if (bridgeBlocked) {
-                    "[WARNING: บล็อกงานข้ามสะพาน/ข้ามเขต!] จุดส่งห่างหมุด ${formatKm(dropoffToPin)} กม."
-                } else if (!dropoffOk) {
-                    "[WARNING: จุดส่งฉีกออกนอกหมุด ${formatKm(dropoffToPin)} กม.] เกินรัศมีส่ง ${format1Dec(maxDropoffRadiusKm.toDouble())} กม."
+    fun formatCoordinate(value: Double?, isLatitude: Boolean, format: CoordinateFormat): String {
+        if (value == null) return "—"
+        return when (format) {
+            CoordinateFormat.DECIMAL -> String.format(Locale.US, "%.6f°", value)
+            CoordinateFormat.DMS -> {
+                val hemisphere = if (isLatitude) {
+                    if (value >= 0) "N" else "S"
                 } else {
-                    "[WARNING: ร้านอยู่ไกลหมุด ${formatKm(pickupToPin)} กม.] เกินรัศมีรับ ${format1Dec(maxPickupRadiusKm.toDouble())} กม."
+                    if (value >= 0) "E" else "W"
                 }
+                val absVal = abs(value)
+                val deg = floor(absVal).toInt()
+                val minFull = (absVal - deg) * 60.0
+                val min = floor(minFull).toInt()
+                val sec = (minFull - min) * 60.0
+                String.format(Locale.US, "%d°%02d'%04.1f\"%s", deg, min, sec, hemisphere)
             }
         }
-
-        return OrderEvaluation(
-            order = order,
-            pickupToPinKm = pickupToPin,
-            dropoffToPinKm = dropoffToPin,
-            orderTripKm = orderTripKm,
-            loopBackKm = loopBackKm,
-            totalLoopKm = totalLoopKm,
-            bahtPerLoopKm = bahtPerLoopKm,
-            isPickupWithinRadius = pickupOk,
-            isDropoffWithinRadius = dropoffOk,
-            grade = grade,
-            verdictDetail = detail
-        )
     }
 
-    fun formatKm(value: Double): String {
-        val rounded = (value * 100.0).roundToInt() / 100.0
-        return String.format(java.util.Locale.US, "%.2f", rounded)
+    fun formatCoordinatePair(lat: Double?, lng: Double?, format: CoordinateFormat): String {
+        if (lat == null || lng == null) return "—"
+        return when (format) {
+            CoordinateFormat.DECIMAL -> String.format(Locale.US, "%.6f, %.6f", lat, lng)
+            CoordinateFormat.DMS -> "${formatCoordinate(lat, true, format)} ${formatCoordinate(lng, false, format)}"
+        }
     }
 
-    fun format1Dec(value: Double): String {
-        val rounded = (value * 10.0).roundToInt() / 10.0
-        return String.format(java.util.Locale.US, "%.1f", rounded)
+    fun formatDistanceMeters(meters: Float?, unit: MeasurementUnit): String {
+        if (meters == null) return "—"
+        return when (unit) {
+            MeasurementUnit.METRIC, MeasurementUnit.NAUTICAL ->
+                String.format(Locale.US, "±%.1f %s", meters, unit.distanceUnitTh)
+            MeasurementUnit.IMPERIAL ->
+                String.format(Locale.US, "±%.1f %s", meters * 3.28084f, unit.distanceUnitTh)
+        }
+    }
+
+    fun formatAltitude(altitudeMeters: Double?, unit: MeasurementUnit): String {
+        if (altitudeMeters == null) return "—"
+        return when (unit) {
+            MeasurementUnit.METRIC, MeasurementUnit.NAUTICAL ->
+                String.format(Locale.US, "%.1f %s", altitudeMeters, unit.distanceUnitTh)
+            MeasurementUnit.IMPERIAL ->
+                String.format(Locale.US, "%.1f %s", altitudeMeters * 3.28084, unit.distanceUnitTh)
+        }
+    }
+
+    fun formatSpeed(speedMps: Float?, unit: MeasurementUnit): String {
+        if (speedMps == null) return "—"
+        val converted = when (unit) {
+            MeasurementUnit.METRIC -> speedMps * 3.6f
+            MeasurementUnit.IMPERIAL -> speedMps * 2.23694f
+            MeasurementUnit.NAUTICAL -> speedMps * 1.94384f
+        }
+        return String.format(Locale.US, "%.1f %s", converted, unit.speedUnitTh)
     }
 }

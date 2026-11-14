@@ -1,11 +1,9 @@
 package com.example
 
-import com.example.model.AutoFilterRules
+import com.example.model.CoordinateFormat
 import com.example.model.GeoMath
-import com.example.model.IncomingOrderCard
-import com.example.model.MerchantPoint
-import com.example.model.OrderGrade
-import com.example.model.RiderPlatform
+import com.example.model.MeasurementUnit
+import com.example.model.SavedLocationItem
 import com.example.service.GpsKalmanFilter
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -14,48 +12,41 @@ import kotlin.math.abs
 
 class ExampleUnitTest {
     @Test
-    fun haversineAndOrderEvaluation_areAccurate() {
-        val pinLat = 13.8768
-        val pinLng = 100.4113
-        val dist = GeoMath.haversineKm(pinLat, pinLng, 13.8790, 100.4130)
-        assertTrue(dist in 0.2..0.4)
+    fun coordinateAndUnitConversions_areAccurate() {
+        val lat = 13.756331
+        val lng = 100.501762
 
-        val sRankOrder = IncomingOrderCard(
-            id = "TEST-1",
-            platform = RiderPlatform.LINE_MAN,
-            merchantName = "Test Merchant",
-            dropoffName = "Test Dropoff",
-            pickupLat = pinLat + 0.002,
-            pickupLng = pinLng + 0.001,
-            dropoffLat = pinLat - 0.006,
-            dropoffLng = pinLng + 0.004,
-            payoutBaht = 50,
-            estMinutes = 9
-        )
+        val decStr = GeoMath.formatCoordinatePair(lat, lng, CoordinateFormat.DECIMAL)
+        assertEquals("13.756331, 100.501762", decStr)
 
-        val eval = GeoMath.evaluateOrder(
-            order = sRankOrder,
-            pinLat = pinLat,
-            pinLng = pinLng,
-            maxPickupRadiusKm = 0.8f,
-            maxDropoffRadiusKm = 2.0f,
-            rules = AutoFilterRules()
-        )
-        assertEquals(OrderGrade.S_RANK_LOOP, eval.grade)
-        assertTrue(eval.isPickupWithinRadius)
-        assertTrue(eval.isDropoffWithinRadius)
+        val dmsStr = GeoMath.formatCoordinatePair(lat, lng, CoordinateFormat.DMS)
+        assertTrue(dmsStr.contains("13°45'"))
+        assertTrue(dmsStr.contains("100°30'"))
+
+        val metricSpeed = GeoMath.formatSpeed(10f, MeasurementUnit.METRIC)
+        assertEquals("36.0 กม./ชม.", metricSpeed)
+
+        val imperialAlt = GeoMath.formatAltitude(100.0, MeasurementUnit.IMPERIAL)
+        assertEquals("328.1 ฟุต", imperialAlt)
     }
 
     @Test
-    fun goldenCentroid_computesAveragePoint() {
-        val merchants = listOf(
-            MerchantPoint("1", "A", "Food", 13.8700, 100.4100, 1.0f),
-            MerchantPoint("2", "B", "Food", 13.8800, 100.4200, 1.0f)
+    fun savedLocationSerialization_roundTripsCleanly() {
+        val item = SavedLocationItem(
+            id = "LOC-101",
+            name = "จุดรับสัญญาณหลัก",
+            latitude = 13.7563,
+            longitude = 100.5018,
+            accuracyMeters = 2.4f,
+            altitudeMeters = 14.5,
+            timestampMillis = 1700000000000L
         )
-        val (cLat, cLng, avgDist) = GeoMath.calculateGoldenCentroid(merchants)
-        assertEquals(13.8750, cLat, 0.0001)
-        assertEquals(100.4150, cLng, 0.0001)
-        assertTrue(avgDist > 0.0)
+        val rawJson = SavedLocationItem.serializeList(listOf(item))
+        val restored = SavedLocationItem.deserializeList(rawJson)
+        assertEquals(1, restored.size)
+        assertEquals("จุดรับสัญญาณหลัก", restored[0].name)
+        assertEquals(13.7563, restored[0].latitude, 1e-4)
+        assertEquals(100.5018, restored[0].longitude, 1e-4)
     }
 
     @Test
@@ -64,17 +55,14 @@ class ExampleUnitTest {
         val anchorLat = 13.8768
         val anchorLng = 100.4113
 
-        // Initial accurate fix
         val (initLat, initLng) = filter.process(anchorLat, anchorLng, accuracyMeters = 2.5f, timestampMillis = 1000L)
         assertEquals(anchorLat, initLat, 1e-6)
         assertEquals(anchorLng, initLng, 1e-6)
 
-        // Sudden noisy spike 1 second later with poor accuracy (18m)
         val spikeLat = anchorLat + 0.0020
         val spikeLng = anchorLng + 0.0020
         val (smoothedLat, smoothedLng) = filter.process(spikeLat, spikeLng, accuracyMeters = 18.0f, timestampMillis = 2000L)
 
-        // Smoothed position should stay much closer to anchor than raw spike
         assertTrue(abs(smoothedLat - anchorLat) < abs(spikeLat - anchorLat) * 0.25)
         assertTrue(abs(smoothedLng - anchorLng) < abs(spikeLng - anchorLng) * 0.25)
     }
