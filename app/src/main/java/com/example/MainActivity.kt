@@ -93,6 +93,17 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
         }
     }
 
+    val requestLocationPermissions = {
+        val perms = buildList {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+            add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }.toTypedArray()
+        locationPermissionLauncher.launch(perms)
+    }
+
     LaunchedEffect(Unit) {
         val hasFine = ContextCompat.checkSelfPermission(
             context,
@@ -105,6 +116,8 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
         if (hasFine || hasCoarse) {
             viewModel.bindHardwareLocationUpdates(context, true)
             ContextCompat.startForegroundService(context, Intent(context, GpsKeepAliveService::class.java))
+        } else {
+            requestLocationPermissions()
         }
     }
 
@@ -196,17 +209,14 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
                         onUpdatePickupRadius = { viewModel.updatePickupRadius(it) },
                         onUpdateDropoffRadius = { viewModel.updateDropoffRadius(it) },
                         onSelectLockMode = { viewModel.selectLockMode(it) },
-                        onToggleEngageLock = { viewModel.toggleEngageFixPointLock() },
+                        onToggleEngageLock = {
+                            if (!uiState.hasLocationPermission) {
+                                requestLocationPermissions()
+                            }
+                            viewModel.toggleEngageFixPointLock()
+                        },
                         onMapPinClicked = { lat, lng -> viewModel.setPinFromMapClick(lat, lng) },
-                        onRequestGpsPermission = {
-                            locationPermissionLauncher.launch(
-                                arrayOf(
-                                    Manifest.permission.ACCESS_FINE_LOCATION,
-                                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                                    Manifest.permission.POST_NOTIFICATIONS
-                                )
-                            )
-                        }
+                        onRequestGpsPermission = { requestLocationPermissions() }
                     )
 
                     TacticalTab.SMART_FILTER -> SmartOrderFilterTab(
@@ -225,7 +235,12 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
                         uiState = uiState,
                         onSelectPin = { viewModel.selectHotzonePin(it) },
                         onMapPinClicked = { lat, lng -> viewModel.setPinFromMapClick(lat, lng) },
-                        onUseCurrentGpsAsPin = { viewModel.setCurrentGpsAsActivePin() },
+                        onUseCurrentGpsAsPin = {
+                            if (!uiState.hasLocationPermission) {
+                                requestLocationPermissions()
+                            }
+                            viewModel.setCurrentGpsAsActivePin()
+                        },
                         onAddCustomPin = { name, tag, lat, lng, desc ->
                             viewModel.addCustomHotzonePin(name, tag, lat, lng, desc)
                         },
