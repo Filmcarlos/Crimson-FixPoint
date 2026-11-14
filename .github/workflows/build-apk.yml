@@ -1,0 +1,126 @@
+name: Build Crimson FixPoint Android APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Assemble Signed Debug & Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Prepare Debug & Release Signing Keystores
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || 'crimsonfixpoint2026' }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'crimsonfixpoint2026' }}
+        run: |
+          # 1. Ensure debug.keystore exists for debugConfig in app/build.gradle.kts
+          if [ ! -f "debug.keystore" ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          # 2. Ensure release keystore (my-upload-key.jks) exists for release signingConfig in app/build.gradle.kts
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > my-upload-key.jks
+          elif [ ! -f "my-upload-key.jks" ]; then
+            keytool -genkeypair -v \
+              -keystore my-upload-key.jks \
+              -storepass "$STORE_PASSWORD" \
+              -alias upload \
+              -keypass "$KEY_PASSWORD" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Crimson FixPoint,OU=Tactical Rider Systems,O=CrimsonFixPoint,L=Bangkok,ST=Bangkok,C=TH"
+          fi
+
+          # 3. Ensure .env file exists for Secrets Gradle Plugin
+          if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+            cp .env.example .env
+          fi
+
+      - name: Run Unit Tests
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || 'crimsonfixpoint2026' }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'crimsonfixpoint2026' }}
+        run: gradle :app:testDebugUnitTest --no-daemon
+
+      - name: Build Debug & Release APKs with Gradle
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || 'crimsonfixpoint2026' }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'crimsonfixpoint2026' }}
+        run: |
+          gradle :app:assembleDebug :app:assembleRelease --no-daemon
+
+      - name: Prepare Named APK Artifacts
+        run: |
+          mkdir -p dist-apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist-apk/CrimsonFixPoint-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk dist-apk/CrimsonFixPoint-release.apk
+          ls -lh dist-apk/
+
+      - name: Upload Signed Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonFixPoint-Debug-APK
+          path: dist-apk/CrimsonFixPoint-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Signed Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrimsonFixPoint-Release-APK
+          path: dist-apk/CrimsonFixPoint-release.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish GitHub Release on Version Tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-apk/CrimsonFixPoint-release.apk
+            dist-apk/CrimsonFixPoint-debug.apk
+          generate_release_notes: true

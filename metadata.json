@@ -1,0 +1,6 @@
+{
+  "name": "Crimson FixPoint",
+  "description": "Tactical GPS Stabilizer & Short-Loop Order Filter for Delivery Riders",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

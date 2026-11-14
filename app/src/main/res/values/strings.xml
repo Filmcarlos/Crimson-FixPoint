@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Crimson FixPoint</string>
+    <string name="app_tagline">Tactical GPS Stabilizer &amp; Short-Loop Order Filter</string>
+    <string name="tab_fixpoint">FIXPOINT CORE</string>
+    <string name="tab_filter">SMART FILTER</string>
+    <string name="tab_hotzones">HOTZONE PINS</string>
+    <string name="tab_hud">HUD &amp; GNSS</string>
+    <string name="btn_engage_lock">ENGAGE FIXPOINT LOCK</string>
+    <string name="btn_release_lock">RELEASE TACTICAL LOCK</string>
+    <string name="btn_simulate_order">จำลองงานเด้งใหม่ (SIMULATE ORDER)</string>
+    <string name="btn_use_current_gps">ดึงพิกัดปัจจุบันตั้งเป็นหมุดหลัก</string>
+    <string name="btn_add_pin">เพิ่มหมุดทองคำใหม่</string>
+    <string name="btn_calc_centroid">คำนวณพิกัดกึ่งกลางทองคำ (Golden Centroid)</string>
+    <string name="cd_sound_toggle">สลับเปิดปิดเสียงแจ้งเตือนยุทธวิธี</string>
+    <string name="cd_radar_view">เรดาร์ล็อคหมุดและวงแหวนรัศมีรับส่ง 2 ชั้น</string>
+</resources>

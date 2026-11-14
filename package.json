@@ -1,0 +1,23 @@
+{
+  "name": "crimson-fixpoint",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Crimson FixPoint - Tactical GPS Stabilizer & Short-Loop Order Filter for Delivery Riders (Android & Leaflet CartoDB Dark Matter HUD)",
+  "scripts": {
+    "build:apk-debug": "gradle :app:assembleDebug",
+    "build:apk-release": "gradle :app:assembleRelease",
+    "test:android": "gradle :app:testDebugUnitTest",
+    "lint:android": "gradle :app:lintDebug"
+  },
+  "keywords": [
+    "delivery-rider",
+    "tactical-gps",
+    "short-loop-filter",
+    "leaflet",
+    "cartodb-dark-matter",
+    "kotlin",
+    "jetpack-compose",
+    "android-apk"
+  ],
+  "license": "MIT"
+}
