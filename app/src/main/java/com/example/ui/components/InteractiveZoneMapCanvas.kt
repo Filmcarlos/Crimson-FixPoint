@@ -1,11 +1,17 @@
 package com.example.ui.components
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.view.MotionEvent
+import android.view.ViewGroup
 import android.webkit.JavascriptInterface
-import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -16,15 +22,20 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -32,6 +43,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -40,6 +52,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -48,40 +61,80 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.example.model.GeoMath
 import com.example.model.SavedLocationItem
 import com.example.model.ZoneMonitorStatus
+import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CrimsonBorderGlow
 import com.example.ui.theme.CrimsonNeon
+import com.example.ui.theme.CrimsonRed
 import com.example.ui.theme.EmeraldSRank
-import com.example.ui.theme.ObsidianBlack
 import com.example.ui.theme.TextHudMuted
 import com.example.ui.theme.TextHudPrimary
 import com.example.ui.theme.TextHudSecondary
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Locale
-import kotlin.math.max
 
-private class LeafletBridge(
-    private val onTapCallback: (Double, Double) -> Unit
+private class LeafletMapJsBridge(
+    private val mainHandler: Handler,
+    private val onTapCallback: (Double, Double) -> Unit,
+    private val onMapReadyCallback: () -> Unit,
+    private val onTileLoadSuccessCallback: () -> Unit,
+    private val onTileErrorCallback: (String) -> Unit
 ) {
-    private val mainHandler = Handler(Looper.getMainLooper())
-
     @JavascriptInterface
-    fun onMapClicked(lat: Double, lng: Double) {
+    fun onMapTapped(lat: Double, lng: Double) {
         if (lat.isNaN() || lng.isNaN()) return
         mainHandler.post {
             onTapCallback(lat.coerceIn(-85.0, 85.0), lng.coerceIn(-180.0, 180.0))
         }
     }
+
+    @JavascriptInterface
+    fun onMapReady() {
+        mainHandler.post {
+            onMapReadyCallback()
+        }
+    }
+
+    @JavascriptInterface
+    fun onTileLoaded() {
+        mainHandler.post {
+            onTileLoadSuccessCallback()
+        }
+    }
+
+    @JavascriptInterface
+    fun onTileError(reason: String) {
+        mainHandler.post {
+            onTileErrorCallback(reason)
+        }
+    }
+}
+
+private fun checkNetworkStatusErrorTh(context: Context): String? {
+    return runCatching {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return@runCatching null
+        val activeNetwork = cm.activeNetwork
+            ?: return@runCatching "ไม่สามารถโหลดไทล์แผนที่ได้: อุปกรณ์ไม่ได้เชื่อมต่ออินเทอร์เน็ต"
+        val caps = cm.getNetworkCapabilities(activeNetwork)
+            ?: return@runCatching "ไม่สามารถโหลดไทล์แผนที่ได้: ไม่พบความสามารถเครือข่ายที่ใช้งานได้"
+        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+            "ไม่สามารถโหลดไทล์แผนที่ได้: เครือข่ายปัจจุบันไม่มีสิทธิ์เข้าถึงอินเทอร์เน็ต"
+        } else {
+            null
+        }
+    }.getOrNull()
 }
 
 /**
- * Real Leaflet + OpenStreetMap Dark Tiles (CARTO Dark Matter, no API key required):
- * - Renders interactive Leaflet map with CARTO Dark tiles (`https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png`)
- * - Tap anywhere on map to place/move pin (`map.on('click', ...)`)
- * - Draws translucent crimson radius circle (`#E11D48` / `#F43F5E`) around the active pin
- * - Automatically zooms to fit the full radius circle (`map.fitBounds(circle.getBounds())`) when radius changes
- * - Shows live user GPS marker and geodesic line to the pin
- * - Displays required OpenStreetMap & CARTO attribution (`© OpenStreetMap contributors © CARTO`)
+ * Real Leaflet + Standard OpenStreetMap Interactive Map (`https://tile.openstreetmap.org/{z}/{x}/{y}.png`):
+ * - Uses keyless OpenStreetMap standard tiles (zero Google Maps code or API keys)
+ * - Displays "© OpenStreetMap contributors" attribution
+ * - Configures WebView to allow loading images over the internet (`loadsImagesAutomatically = true`, `blockNetworkImage = false`, `blockNetworkLoads = false`)
+ * - Displays a clear on-screen error message explaining the cause if map tiles fail to load
+ * - Supports tapping on the map to place/move a pin and draws a translucent crimson radius circle around the active pin
  */
-@SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
+@SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun InteractiveZoneMapCanvas(
     activePin: SavedLocationItem?,
@@ -96,132 +149,230 @@ fun InteractiveZoneMapCanvas(
     modifier: Modifier = Modifier,
     mapHeightDp: Int = 270
 ) {
-    val currentOnMapTap by rememberUpdatedState(onMapTapPin)
+    val context = LocalContext.current
+    val currentOnMapTapPin by rememberUpdatedState(onMapTapPin)
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
-    var isPageReady by remember { mutableStateOf(false) }
-
-    val buildJsUpdateCommand = remember(
-        activePin,
-        allPins,
-        userLatitude,
-        userLongitude,
-        radiusKm,
-        gpsBufferMeters,
-        zoneStatus
-    ) {
-        val hasPin = activePin != null
-        val pinLat = activePin?.latitude ?: (userLatitude ?: 13.756331)
-        val pinLng = activePin?.longitude ?: (userLongitude ?: 100.501762)
-        val radiusMeters = max(0f, radiusKm * 1000f)
-        val bufferMeters = max(0, gpsBufferMeters)
-        val hasUser = userLatitude != null && userLongitude != null
-        val uLat = userLatitude ?: 0.0
-        val uLng = userLongitude ?: 0.0
-        val isOutside = zoneStatus == ZoneMonitorStatus.OUTSIDE_ZONE
-
-        val secondaryJson = allPins
-            .filter { it.id != activePin?.id }
-            .joinToString(prefix = "[", postfix = "]") { item ->
-                String.format(Locale.US, "[%.6f,%.6f]", item.latitude, item.longitude)
-            }
-
-        String.format(
-            Locale.US,
-            "window.updateCrimsonMap && window.updateCrimsonMap(%b, %.6f, %.6f, %.1f, %d, %b, %.6f, %.6f, %b, %s);",
-            hasPin,
-            pinLat,
-            pinLng,
-            radiusMeters,
-            bufferMeters,
-            hasUser,
-            uLat,
-            uLng,
-            isOutside,
-            secondaryJson
-        )
+    var isLeafletReady by remember { mutableStateOf(false) }
+    var tileErrorMessageTh by remember {
+        mutableStateOf<String?>(checkNetworkStatusErrorTh(context))
     }
+    var reloadTrigger by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(buildJsUpdateCommand, isPageReady) {
-        if (isPageReady) {
-            runCatching {
-                webViewRef?.evaluateJavascript(buildJsUpdateCommand, null)
+    val initialLat = activePin?.latitude ?: userLatitude ?: 13.756331
+    val initialLng = activePin?.longitude ?: userLongitude ?: 100.501762
+
+    val leafletHtml = remember( {
+        buildLeafletStandardOsmHtml(initialLat = initialLat, initialLng = initialLng)
+    } )
+
+    fun pushStateToLeaflet(autoFitRadius: Boolean) {
+        val wv = webViewRef ?: return
+        if (!isLeafletReady) return
+
+        val pinsJson = JSONArray().apply {
+            allPins.forEach { item ->
+                put(
+                    JSONObject().apply {
+                        put("id", item.id)
+                        put("name", item.name)
+                        put("lat", item.latitude)
+                        put("lng", item.longitude)
+                    }
+                )
             }
         }
+
+        val payload = JSONObject().apply {
+            if (activePin != null) {
+                put("hasActivePin", true)
+                put("pinId", activePin.id)
+                put("pinName", activePin.name)
+                put("pinLat", activePin.latitude)
+                put("pinLng", activePin.longitude)
+            } else {
+                put("hasActivePin", false)
+            }
+            if (userLatitude != null && userLongitude != null) {
+                put("hasUser", true)
+                put("userLat", userLatitude)
+                put("userLng", userLongitude)
+            } else {
+                put("hasUser", false)
+            }
+            put("radiusMeters", (radiusKm * 1000f).toDouble())
+            put("bufferMeters", gpsBufferMeters)
+            put("isOutside", zoneStatus == ZoneMonitorStatus.OUTSIDE_ZONE)
+            put("autoFit", autoFitRadius)
+            put("secondaryPins", pinsJson)
+        }
+
+        wv.evaluateJavascript("window.updateFixPointMapState && window.updateFixPointMapState($payload);", null)
+    }
+
+    // Push updates when pin, radius, or buffer changes (with auto-fit to radius circle)
+    LaunchedEffect(
+        isLeafletReady,
+        activePin?.id,
+        activePin?.latitude,
+        activePin?.longitude,
+        activePin?.name,
+        radiusKm,
+        gpsBufferMeters,
+        allPins.size
+    ) {
+        pushStateToLeaflet(autoFitRadius = true)
+    }
+
+    // Push live user GPS updates without resetting manual pan/zoom
+    LaunchedEffect(
+        isLeafletReady,
+        userLatitude,
+        userLongitude,
+        zoneStatus
+    ) {
+        pushStateToLeaflet(autoFitRadius = false)
     }
 
     DisposableEffect(Unit) {
         onDispose {
-            runCatching {
-                webViewRef?.stopLoading()
-                webViewRef?.destroy()
-            }
+            webViewRef?.stopLoading()
+            webViewRef?.destroy()
             webViewRef = null
         }
     }
 
+    val containerShape = RoundedCornerShape(4.dp)
+
+    // Note: Do NOT clip WebView with CutCornerShape so hardware-accelerated tiles render brightly on all devices
     Box(
         modifier = modifier
             .fillMaxWidth()
             .height(mapHeightDp.dp)
-            .clip(PrecisionPanelShape)
-            .background(ObsidianBlack)
+            .background(Color(0xFFECE8DF), containerShape)
             .border(
                 width = 1.5.dp,
                 color = when (zoneStatus) {
-                    ZoneMonitorStatus.INSIDE_ZONE -> EmeraldSRank.copy(alpha = 0.85f)
+                    ZoneMonitorStatus.INSIDE_ZONE -> EmeraldSRank.copy(alpha = 0.9f)
                     ZoneMonitorStatus.OUTSIDE_ZONE -> CrimsonNeon
                     else -> CrimsonBorderGlow
                 },
-                shape = PrecisionPanelShape
+                shape = containerShape
             )
             .testTag("interactive_zone_map_canvas")
     ) {
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(1.5.dp),
             factory = { ctx ->
                 WebView(ctx).apply {
-                    setBackgroundColor(android.graphics.Color.parseColor("#070709"))
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    setBackgroundColor(android.graphics.Color.parseColor("#ECE8DF"))
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        isForceDarkAllowed = false
+                    }
+
                     settings.apply {
                         javaScriptEnabled = true
                         domStorageEnabled = true
-                        cacheMode = WebSettings.LOAD_DEFAULT
+                        databaseEnabled = true
+                        loadsImagesAutomatically = true
+                        blockNetworkImage = false
+                        blockNetworkLoads = false
+                        allowContentAccess = true
                         mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                        cacheMode = WebSettings.LOAD_DEFAULT
+                        useWideViewPort = true
+                        loadWithOverviewMode = true
                         setSupportZoom(false)
                         builtInZoomControls = false
                         displayZoomControls = false
+                        userAgentString =
+                            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36 CrimsonFixPoint/2.0 (https://www.openstreetmap.org)"
                     }
-                    // Prevent parent verticalScroll from intercepting map pan/pinch/tap gestures
+
+                    // Prevent parent vertical scroll from intercepting map drags/taps
                     setOnTouchListener { v, event ->
                         when (event.actionMasked) {
-                            MotionEvent.ACTION_DOWN,
-                            MotionEvent.ACTION_MOVE,
-                            MotionEvent.ACTION_POINTER_DOWN -> {
+                            android.view.MotionEvent.ACTION_DOWN,
+                            android.view.MotionEvent.ACTION_MOVE -> {
                                 v.parent?.requestDisallowInterceptTouchEvent(true)
                             }
-                            MotionEvent.ACTION_UP,
-                            MotionEvent.ACTION_CANCEL -> {
+                            android.view.MotionEvent.ACTION_UP,
+                            android.view.MotionEvent.ACTION_CANCEL -> {
                                 v.parent?.requestDisallowInterceptTouchEvent(false)
                             }
                         }
                         false
                     }
+
                     addJavascriptInterface(
-                        LeafletBridge { lat, lng -> currentOnMapTap(lat, lng) },
-                        "AndroidBridge"
+                        LeafletMapJsBridge(
+                            mainHandler = mainHandler,
+                            onTapCallback = { lat, lng -> currentOnMapTapPin(lat, lng) },
+                            onMapReadyCallback = {
+                                isLeafletReady = true
+                            },
+                            onTileLoadSuccessCallback = {
+                                tileErrorMessageTh = null
+                            },
+                            onTileErrorCallback = { reason ->
+                                val networkErr = checkNetworkStatusErrorTh(ctx)
+                                tileErrorMessageTh = networkErr ?: reason
+                            }
+                        ),
+                        "AndroidMapBridge"
                     )
-                    webChromeClient = WebChromeClient()
+
                     webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            super.onPageFinished(view, url)
-                            isPageReady = true
-                            runCatching {
-                                view?.evaluateJavascript(buildJsUpdateCommand, null)
+                        override fun onReceivedError(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                            error: WebResourceError?
+                        ) {
+                            super.onReceivedError(view, request, error)
+                            val url = request?.url?.toString().orEmpty()
+                            if (url.contains("tile.openstreetmap.org") || url.contains("leaflet")) {
+                                val netErr = checkNetworkStatusErrorTh(ctx)
+                                val errDesc = error?.description?.toString().orEmpty()
+                                val reason = netErr
+                                    ?: "โหลดไทล์แผนที่ OpenStreetMap ไม่สำเร็จ: ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ไทล์ได้ ($errDesc)"
+                                mainHandler.post {
+                                    tileErrorMessageTh = reason
+                                }
+                            }
+                        }
+
+                        override fun onReceivedHttpError(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                            errorResponse: WebResourceResponse?
+                        ) {
+                            super.onReceivedHttpError(view, request, errorResponse)
+                            val url = request?.url?.toString().orEmpty()
+                            if (url.contains("tile.openstreetmap.org")) {
+                                val statusCode = errorResponse?.statusCode ?: 0
+                                val reason = when (statusCode) {
+                                    403, 429 -> "โหลดไทล์แผนที่ไม่สำเร็จ: เซิร์ฟเวอร์ OpenStreetMap จำกัดการเข้าถึงชั่วคราว (HTTP $statusCode)"
+                                    in 500..599 -> "โหลดไทล์แผนที่ไม่สำเร็จ: เซิร์ฟเวอร์ OpenStreetMap ขัดข้องชั่วคราว (HTTP $statusCode)"
+                                    else -> "โหลดไทล์แผนที่ OpenStreetMap ไม่สำเร็จ (HTTP $statusCode)"
+                                }
+                                mainHandler.post {
+                                    tileErrorMessageTh = reason
+                                }
                             }
                         }
                     }
+
                     loadDataWithBaseURL(
-                        "https://crimsonfixpoint.local/",
-                        LEAFLET_CARTO_DARK_HTML,
+                        "https://www.openstreetmap.org/",
+                        leafletHtml,
                         "text/html",
                         "UTF-8",
                         null
@@ -231,13 +382,23 @@ fun InteractiveZoneMapCanvas(
             },
             update = { view ->
                 webViewRef = view
-                if (isPageReady) {
-                    runCatching {
-                        view.evaluateJavascript(buildJsUpdateCommand, null)
-                    }
-                }
             }
         )
+
+        // Reload trigger effect
+        LaunchedEffect(reloadTrigger) {
+            if (reloadTrigger > 0) {
+                tileErrorMessageTh = checkNetworkStatusErrorTh(context)
+                isLeafletReady = false
+                webViewRef?.loadDataWithBaseURL(
+                    "https://www.openstreetmap.org/",
+                    leafletHtml,
+                    "text/html",
+                    "UTF-8",
+                    null
+                )
+            }
+        }
 
         // Top-Left Map HUD Badge: Active Pin & Radius
         Column(
@@ -245,7 +406,7 @@ fun InteractiveZoneMapCanvas(
                 .align(Alignment.TopStart)
                 .padding(10.dp)
                 .clip(PrecisionButtonShape)
-                .background(Color(0xD90A090E))
+                .background(Color(0xE60D0A0F))
                 .border(1.dp, CrimsonBorderGlow, PrecisionButtonShape)
                 .padding(horizontal = 10.dp, vertical = 6.dp)
         ) {
@@ -278,7 +439,7 @@ fun InteractiveZoneMapCanvas(
             )
         }
 
-        // Top-Right Zoom / Auto-Fit Controls driving Leaflet directly
+        // Top-Right Controls: Zoom In / Out / Auto-Fit Radius Circle
         Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -290,12 +451,10 @@ fun InteractiveZoneMapCanvas(
                 modifier = Modifier
                     .size(34.dp)
                     .clip(PrecisionButtonShape)
-                    .background(Color(0xD9120D11))
+                    .background(Color(0xE6120D11))
                     .border(1.dp, CrimsonBorderGlow, PrecisionButtonShape)
                     .clickable {
-                        runCatching {
-                            webViewRef?.evaluateJavascript("window.zoomInMap && window.zoomInMap();", null)
-                        }
+                        webViewRef?.evaluateJavascript("window.zoomInMap && window.zoomInMap();", null)
                     }
                     .testTag("btn_map_zoom_in")
             ) {
@@ -306,12 +465,10 @@ fun InteractiveZoneMapCanvas(
                 modifier = Modifier
                     .size(34.dp)
                     .clip(PrecisionButtonShape)
-                    .background(Color(0xD9120D11))
+                    .background(Color(0xE6120D11))
                     .border(1.dp, CrimsonBorderGlow, PrecisionButtonShape)
                     .clickable {
-                        runCatching {
-                            webViewRef?.evaluateJavascript("window.zoomOutMap && window.zoomOutMap();", null)
-                        }
+                        webViewRef?.evaluateJavascript("window.zoomOutMap && window.zoomOutMap();", null)
                     }
                     .testTag("btn_map_zoom_out")
             ) {
@@ -322,12 +479,10 @@ fun InteractiveZoneMapCanvas(
                 modifier = Modifier
                     .size(34.dp)
                     .clip(PrecisionButtonShape)
-                    .background(Color(0xD9120D11))
+                    .background(Color(0xE6120D11))
                     .border(1.dp, CrimsonNeon, PrecisionButtonShape)
                     .clickable {
-                        runCatching {
-                            webViewRef?.evaluateJavascript("window.fitRadiusCircle && window.fitRadiusCircle();", null)
-                        }
+                        webViewRef?.evaluateJavascript("window.fitRadiusBounds && window.fitRadiusBounds();", null)
                     }
                     .testTag("btn_map_auto_fit")
             ) {
@@ -337,6 +492,67 @@ fun InteractiveZoneMapCanvas(
                     tint = CrimsonNeon,
                     modifier = Modifier.size(16.dp)
                 )
+            }
+        }
+
+        // Error Banner when tiles fail to load (Requirement 5: ถ้าไทล์โหลดไม่ได้ ให้แสดงข้อความแจ้งสาเหตุบนหน้าจอ)
+        if (tileErrorMessageTh != null) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 14.dp)
+                    .fillMaxWidth()
+                    .clip(PrecisionButtonShape)
+                    .background(Color(0xF21A090D))
+                    .border(1.5.dp, CrimsonNeon, PrecisionButtonShape)
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .testTag("tile_load_error_banner"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.WarningAmber,
+                        contentDescription = null,
+                        tint = AmberWarning,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = tileErrorMessageTh!!,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
+                        color = TextHudPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .clip(PrecisionButtonShape)
+                        .background(CrimsonRed)
+                        .clickable { reloadTrigger++ }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                        .testTag("btn_retry_load_tiles")
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "ลองโหลดแผนที่ใหม่",
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "ลองใหม่",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
             }
         }
 
@@ -392,261 +608,362 @@ fun InteractiveZoneMapCanvas(
                 )
             }
 
-            // Required OpenStreetMap & CARTO Attribution Badge
+            // Required OpenStreetMap Attribution Badge ("© OpenStreetMap contributors")
             Box(
                 modifier = Modifier
                     .align(Alignment.End)
                     .clip(PrecisionButtonShape)
-                    .background(Color(0xCC070709))
+                    .background(Color(0xD909080D))
                     .padding(horizontal = 7.dp, vertical = 2.dp)
                     .testTag("osm_attribution_badge")
             ) {
                 Text(
-                    text = "© OpenStreetMap contributors • © CARTO",
+                    text = "© OpenStreetMap contributors",
                     style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.5.sp),
-                    color = TextHudMuted
+                    color = TextHudSecondary
                 )
             }
         }
     }
 }
 
-private const val LEAFLET_CARTO_DARK_HTML = """
+private fun buildLeafletStandardOsmHtml(initialLat: Double, initialLng: Double): String {
+    return """
 <!DOCTYPE html>
 <html lang="th">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>
-  html, body {
-    margin: 0;
-    padding: 0;
-    width: 100%;
-    height: 100%;
-    background-color: #070709;
-    overflow: hidden;
-    -webkit-user-select: none;
-    user-select: none;
-  }
-  #map {
-    width: 100%;
-    height: 100%;
-    background-color: #070709;
-  }
-  .leaflet-container {
-    background: #070709 !important;
-    font-family: sans-serif;
-  }
-  .leaflet-control-attribution {
-    display: none !important;
-  }
-  .crimson-pin-icon {
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    background: radial-gradient(circle, #FFFFFF 22%, #F43F5E 55%, #E11D48 100%);
-    border: 2px solid #F43F5E;
-    box-shadow: 0 0 14px rgba(244, 63, 94, 0.95);
-  }
-  .user-gps-icon-inside {
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: radial-gradient(circle, #FFFFFF 25%, #00E676 65%, #059669 100%);
-    border: 2px solid #FFFFFF;
-    box-shadow: 0 0 12px rgba(0, 230, 118, 0.9);
-  }
-  .user-gps-icon-outside {
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: radial-gradient(circle, #FFFFFF 25%, #F43F5E 65%, #BE123C 100%);
-    border: 2px solid #FFFFFF;
-    box-shadow: 0 0 14px rgba(244, 63, 94, 0.95);
-  }
-</style>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="color-scheme" content="light only" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          onerror="this.onerror=null;this.href='https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css';" />
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #ECE8DF;
+            overflow: hidden;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        #map {
+            width: 100%;
+            height: 100%;
+            background-color: #ECE8DF;
+        }
+        .leaflet-control-attribution {
+            display: none !important;
+        }
+        .crimson-pin-marker {
+            width: 24px;
+            height: 24px;
+            border-radius: 50% 50% 50% 0;
+            background: #E11D48;
+            transform: rotate(-45deg);
+            border: 2.5px solid #FFFFFF;
+            box-shadow: 0 0 12px rgba(244, 63, 94, 0.85);
+            position: relative;
+        }
+        .crimson-pin-marker::after {
+            content: '';
+            width: 8px;
+            height: 8px;
+            margin: 5px 0 0 5px;
+            background: #FFFFFF;
+            position: absolute;
+            border-radius: 50%;
+        }
+        .pin-label-tooltip {
+            background: rgba(15, 10, 14, 0.9) !important;
+            border: 1px solid #F43F5E !important;
+            color: #FFFFFF !important;
+            font-weight: bold !important;
+            font-size: 11px !important;
+            padding: 2px 6px !important;
+            border-radius: 4px !important;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.4) !important;
+        }
+        .pin-label-tooltip::before {
+            display: none !important;
+        }
+    </style>
 </head>
 <body>
-<div id="map"></div>
-<script>
-  var map = L.map('map', {
-    zoomControl: false,
-    attributionControl: true
-  }).setView([13.756331, 100.501762], 13);
+    <div id="map"></div>
+    <script>
+        var map = null;
+        var osmTileLayer = null;
+        var activePinMarker = null;
+        var radiusCircle = null;
+        var bufferCircle = null;
+        var userMarker = null;
+        var userPulseCircle = null;
+        var distanceLine = null;
+        var secondaryLayerGroup = null;
+        var loadedTileCount = 0;
+        var errorTileCount = 0;
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    subdomains: 'abcd',
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-  }).addTo(map);
+        function initFixPointLeaflet() {
+            if (typeof L === 'undefined') {
+                if (window.AndroidMapBridge && window.AndroidMapBridge.onTileError) {
+                    window.AndroidMapBridge.onTileError('ไม่สามารถโหลดไลบรารีแผนที่ Leaflet ได้: กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต');
+                }
+                return;
+            }
 
-  var activePinMarker = null;
-  var radiusCircle = null;
-  var bufferCircle = null;
-  var userMarker = null;
-  var linkLine = null;
-  var secondaryLayerGroup = L.layerGroup().addTo(map);
+            map = L.map('map', {
+                zoomControl: false,
+                attributionControl: true
+            }).setView([$initialLat, $initialLng], 13);
 
-  var lastPinLat = null;
-  var lastPinLng = null;
-  var lastRadiusMeters = null;
+            osmTileLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap contributors'
+            });
 
-  map.on('click', function(e) {
-    if (window.AndroidBridge && window.AndroidBridge.onMapClicked) {
-      window.AndroidBridge.onMapClicked(e.latlng.lat, e.latlng.lng);
-    }
-  });
+            osmTileLayer.on('tileload', function() {
+                loadedTileCount++;
+                errorTileCount = 0;
+                if (window.AndroidMapBridge && window.AndroidMapBridge.onTileLoaded) {
+                    window.AndroidMapBridge.onTileLoaded();
+                }
+            });
 
-  window.zoomInMap = function() {
-    map.zoomIn(1, { animate: true });
-  };
+            osmTileLayer.on('tileerror', function(err) {
+                errorTileCount++;
+                if (loadedTileCount === 0 || errorTileCount >= 2) {
+                    var msg = !navigator.onLine
+                        ? 'ไม่สามารถโหลดไทล์แผนที่ได้: อุปกรณ์ไม่ได้เชื่อมต่ออินเทอร์เน็ต'
+                        : 'โหลดไทล์แผนที่จาก tile.openstreetmap.org ไม่สำเร็จ (เครือข่ายขัดข้องหรือเซิร์ฟเวอร์ไม่ตอบสนอง)';
+                    if (window.AndroidMapBridge && window.AndroidMapBridge.onTileError) {
+                        window.AndroidMapBridge.onTileError(msg);
+                    }
+                }
+            });
 
-  window.zoomOutMap = function() {
-    map.zoomOut(1, { animate: true });
-  };
+            osmTileLayer.addTo(map);
+            secondaryLayerGroup = L.layerGroup().addTo(map);
 
-  window.fitRadiusCircle = function() {
-    if (radiusCircle && radiusCircle.getRadius() > 0) {
-      map.fitBounds(radiusCircle.getBounds(), { padding: [26, 26], animate: true, duration: 0.35 });
-    } else if (activePinMarker) {
-      map.setView(activePinMarker.getLatLng(), 15, { animate: true });
-    }
-  };
+            map.on('click', function(e) {
+                if (window.AndroidMapBridge && window.AndroidMapBridge.onMapTapped) {
+                    window.AndroidMapBridge.onMapTapped(e.latlng.lat, e.latlng.lng);
+                }
+            });
 
-  window.updateCrimsonMap = function(
-    hasPin, pinLat, pinLng, radiusMeters, bufferMeters,
-    hasUser, userLat, userLng, isOutside, secondaryCoords
-  ) {
-    secondaryLayerGroup.clearLayers();
-    if (secondaryCoords && secondaryCoords.length) {
-      for (var i = 0; i < secondaryCoords.length; i++) {
-        var c = secondaryCoords[i];
-        L.circleMarker([c[0], c[1]], {
-          radius: 5,
-          color: '#A1A1AA',
-          weight: 1.5,
-          fillColor: '#3F3F46',
-          fillOpacity: 0.85
-        }).addTo(secondaryLayerGroup);
-      }
-    }
+            setTimeout(function() {
+                map.invalidateSize();
+            }, 120);
 
-    if (hasPin) {
-      var pinLatLng = [pinLat, pinLng];
-      var pinIcon = L.divIcon({
-        className: 'crimson-pin-icon',
-        iconSize: [22, 22],
-        iconAnchor: [11, 11]
-      });
-
-      if (!activePinMarker) {
-        activePinMarker = L.marker(pinLatLng, { icon: pinIcon }).addTo(map);
-      } else {
-        activePinMarker.setLatLng(pinLatLng);
-      }
-
-      var effectiveRadius = Math.max(radiusMeters, 15);
-      if (!radiusCircle) {
-        radiusCircle = L.circle(pinLatLng, {
-          radius: effectiveRadius,
-          color: '#F43F5E',
-          weight: 2.5,
-          opacity: 0.95,
-          fillColor: '#E11D48',
-          fillOpacity: 0.24
-        }).addTo(map);
-      } else {
-        radiusCircle.setLatLng(pinLatLng);
-        radiusCircle.setRadius(effectiveRadius);
-      }
-
-      if (bufferMeters > 0) {
-        var totalBufRadius = effectiveRadius + bufferMeters;
-        if (!bufferCircle) {
-          bufferCircle = L.circle(pinLatLng, {
-            radius: totalBufRadius,
-            color: '#F59E0B',
-            weight: 1.3,
-            dashArray: '6, 6',
-            opacity: 0.75,
-            fillOpacity: 0.0
-          }).addTo(map);
-        } else {
-          bufferCircle.setLatLng(pinLatLng);
-          bufferCircle.setRadius(totalBufRadius);
+            if (window.AndroidMapBridge && window.AndroidMapBridge.onMapReady) {
+                window.AndroidMapBridge.onMapReady();
+            }
         }
-      } else if (bufferCircle) {
-        map.removeLayer(bufferCircle);
-        bufferCircle = null;
-      }
 
-      var pinChanged = (lastPinLat !== pinLat || lastPinLng !== pinLng);
-      var radiusChanged = (lastRadiusMeters !== radiusMeters);
-      if (pinChanged || radiusChanged) {
-        lastPinLat = pinLat;
-        lastPinLng = pinLng;
-        lastRadiusMeters = radiusMeters;
-        if (radiusMeters > 0) {
-          map.fitBounds(radiusCircle.getBounds(), { padding: [26, 26], animate: true, duration: 0.35 });
-        } else {
-          map.setView(pinLatLng, 15, { animate: true });
+        window.zoomInMap = function() {
+            if (map) map.zoomIn();
+        };
+
+        window.zoomOutMap = function() {
+            if (map) map.zoomOut();
+        };
+
+        window.fitRadiusBounds = function() {
+            if (!map) return;
+            if (radiusCircle) {
+                var b = radiusCircle.getBounds();
+                if (b && b.isValid()) {
+                    map.fitBounds(b, { padding: [26, 26], maxZoom: 17 });
+                }
+            }
+        };
+
+        window.updateFixPointMapState = function(state) {
+            if (!map || typeof L === 'undefined') return;
+            map.invalidateSize();
+
+            // 1. Secondary saved pins
+            if (secondaryLayerGroup) {
+                secondaryLayerGroup.clearLayers();
+                if (state.secondaryPins && state.secondaryPins.length) {
+                    for (var i = 0; i < state.secondaryPins.length; i++) {
+                        var sp = state.secondaryPins[i];
+                        if (!state.hasActivePin || sp.id !== state.pinId) {
+                            L.circleMarker([sp.lat, sp.lng], {
+                                radius: 6,
+                                color: '#FFFFFF',
+                                weight: 2,
+                                fillColor: '#3F3F46',
+                                fillOpacity: 0.9
+                            }).addTo(secondaryLayerGroup);
+                        }
+                    }
+                }
+            }
+
+            // 2. Active Pin & Translucent Crimson Radius Circle
+            if (state.hasActivePin) {
+                var pinLatLng = [state.pinLat, state.pinLng];
+                var rMeters = Math.max(25, state.radiusMeters || 0);
+                var totalBufferMeters = rMeters + (state.bufferMeters || 0);
+
+                var pinIcon = L.divIcon({
+                    className: '',
+                    html: '<div class="crimson-pin-marker"></div>',
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 24]
+                });
+
+                if (!activePinMarker) {
+                    activePinMarker = L.marker(pinLatLng, { icon: pinIcon }).addTo(map);
+                } else {
+                    activePinMarker.setLatLng(pinLatLng);
+                }
+
+                activePinMarker.unbindTooltip();
+                if (state.pinName) {
+                    activePinMarker.bindTooltip(state.pinName, {
+                        permanent: true,
+                        direction: 'top',
+                        offset: [0, -26],
+                        className: 'pin-label-tooltip'
+                    });
+                }
+
+                var strokeColor = state.isOutside ? '#FF1744' : '#F43F5E';
+                var fillColor = '#E11D48';
+                var fillAlpha = state.isOutside ? 0.34 : 0.24;
+
+                if (!radiusCircle) {
+                    radiusCircle = L.circle(pinLatLng, {
+                        radius: rMeters,
+                        color: strokeColor,
+                        weight: 2.5,
+                        opacity: 0.95,
+                        fillColor: fillColor,
+                        fillOpacity: fillAlpha
+                    }).addTo(map);
+                } else {
+                    radiusCircle.setLatLng(pinLatLng);
+                    radiusCircle.setRadius(rMeters);
+                    radiusCircle.setStyle({
+                        color: strokeColor,
+                        fillColor: fillColor,
+                        fillOpacity: fillAlpha
+                    });
+                }
+
+                if ((state.bufferMeters || 0) > 0) {
+                    if (!bufferCircle) {
+                        bufferCircle = L.circle(pinLatLng, {
+                            radius: totalBufferMeters,
+                            color: '#F59E0B',
+                            weight: 1.5,
+                            dashArray: '6, 6',
+                            fillOpacity: 0.0
+                        }).addTo(map);
+                    } else {
+                        bufferCircle.setLatLng(pinLatLng);
+                        bufferCircle.setRadius(totalBufferMeters);
+                    }
+                } else if (bufferCircle) {
+                    map.removeLayer(bufferCircle);
+                    bufferCircle = null;
+                }
+
+                if (state.autoFit && radiusCircle) {
+                    var bounds = radiusCircle.getBounds();
+                    if (bounds && bounds.isValid()) {
+                        map.fitBounds(bounds, { padding: [26, 26], maxZoom: 17 });
+                    }
+                }
+            } else {
+                if (activePinMarker) { map.removeLayer(activePinMarker); activePinMarker = null; }
+                if (radiusCircle) { map.removeLayer(radiusCircle); radiusCircle = null; }
+                if (bufferCircle) { map.removeLayer(bufferCircle); bufferCircle = null; }
+            }
+
+            // 3. Real User GPS Position Dot & Line to Active Pin
+            if (state.hasUser) {
+                var userLatLng = [state.userLat, state.userLng];
+                var uColor = state.isOutside ? '#F43F5E' : '#00C853';
+
+                if (!userPulseCircle) {
+                    userPulseCircle = L.circleMarker(userLatLng, {
+                        radius: 13,
+                        color: uColor,
+                        weight: 0,
+                        fillColor: uColor,
+                        fillOpacity: 0.28
+                    }).addTo(map);
+                } else {
+                    userPulseCircle.setLatLng(userLatLng);
+                    userPulseCircle.setStyle({ fillColor: uColor, color: uColor });
+                }
+
+                if (!userMarker) {
+                    userMarker = L.circleMarker(userLatLng, {
+                        radius: 6.5,
+                        color: '#FFFFFF',
+                        weight: 2.5,
+                        fillColor: uColor,
+                        fillOpacity: 1.0
+                    }).addTo(map);
+                } else {
+                    userMarker.setLatLng(userLatLng);
+                    userMarker.setStyle({ fillColor: uColor });
+                }
+
+                if (state.hasActivePin) {
+                    var linePts = [[state.pinLat, state.pinLng], userLatLng];
+                    if (!distanceLine) {
+                        distanceLine = L.polyline(linePts, {
+                            color: uColor,
+                            weight: 2,
+                            dashArray: '8, 6',
+                            opacity: 0.9
+                        }).addTo(map);
+                    } else {
+                        distanceLine.setLatLngs(linePts);
+                        distanceLine.setStyle({ color: uColor });
+                    }
+                } else if (distanceLine) {
+                    map.removeLayer(distanceLine);
+                    distanceLine = null;
+                }
+            } else {
+                if (userMarker) { map.removeLayer(userMarker); userMarker = null; }
+                if (userPulseCircle) { map.removeLayer(userPulseCircle); userPulseCircle = null; }
+                if (distanceLine) { map.removeLayer(distanceLine); distanceLine = null; }
+            }
+        };
+
+        function loadScript(src, onSuccess, onError) {
+            var s = document.createElement('script');
+            s.src = src;
+            s.onload = onSuccess;
+            s.onerror = onError;
+            document.body.appendChild(s);
         }
-      }
-    } else {
-      if (activePinMarker) { map.removeLayer(activePinMarker); activePinMarker = null; }
-      if (radiusCircle) { map.removeLayer(radiusCircle); radiusCircle = null; }
-      if (bufferCircle) { map.removeLayer(bufferCircle); bufferCircle = null; }
-      lastPinLat = null;
-      lastPinLng = null;
-      lastRadiusMeters = null;
-    }
 
-    if (hasUser) {
-      var uLatLng = [userLat, userLng];
-      var uIcon = L.divIcon({
-        className: isOutside ? 'user-gps-icon-outside' : 'user-gps-icon-inside',
-        iconSize: [16, 16],
-        iconAnchor: [8, 8]
-      });
-
-      if (!userMarker) {
-        userMarker = L.marker(uLatLng, { icon: uIcon }).addTo(map);
-      } else {
-        userMarker.setLatLng(uLatLng);
-        userMarker.setIcon(uIcon);
-      }
-
-      if (hasPin) {
-        var lineColor = isOutside ? '#F43F5E' : '#00E676';
-        var pts = [[pinLat, pinLng], uLatLng];
-        if (!linkLine) {
-          linkLine = L.polyline(pts, {
-            color: lineColor,
-            weight: 2,
-            dashArray: '8, 6',
-            opacity: 0.85
-          }).addTo(map);
-        } else {
-          linkLine.setLatLngs(pts);
-          linkLine.setStyle({ color: lineColor });
-        }
-      } else if (linkLine) {
-        map.removeLayer(linkLine);
-        linkLine = null;
-      }
-
-      if (!hasPin && lastPinLat === null) {
-        map.setView(uLatLng, 14, { animate: true });
-        lastPinLat = userLat;
-      }
-    } else {
-      if (userMarker) { map.removeLayer(userMarker); userMarker = null; }
-      if (linkLine) { map.removeLayer(linkLine); linkLine = null; }
-    }
-  };
-</script>
+        loadScript(
+            'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+            initFixPointLeaflet,
+            function() {
+                loadScript(
+                    'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js',
+                    initFixPointLeaflet,
+                    function() {
+                        if (window.AndroidMapBridge && window.AndroidMapBridge.onTileError) {
+                            window.AndroidMapBridge.onTileError('ไม่สามารถโหลดสคริปต์แผนที่ Leaflet ได้ (กรุณาตรวจสอบอินเทอร์เน็ต)');
+                        }
+                    }
+                );
+            }
+        );
+    </script>
 </body>
 </html>
-"""
+    """.trimIndent()
+}
