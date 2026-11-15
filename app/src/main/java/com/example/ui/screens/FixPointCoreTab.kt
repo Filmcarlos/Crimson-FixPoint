@@ -353,41 +353,7 @@ fun FixPointCoreTab(
             }
         }
 
-        // 4. Live Interactive Zone Map Preview on Home Screen
-        CrimsonPrecisionPanel {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "แผนที่หมุดและวงกลมรัศมีรับงาน",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextHudPrimary,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = String.format(Locale.US, "รัศมี %.1f กม.", uiState.zoneRadiusKm),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = CrimsonNeon
-                )
-            }
-            Spacer(modifier = Modifier.height(10.dp))
-            InteractiveZoneMapCanvas(
-                activePin = uiState.activePin,
-                allPins = uiState.savedLocations,
-                userLatitude = telemetry.latitude,
-                userLongitude = telemetry.longitude,
-                radiusKm = uiState.zoneRadiusKm,
-                gpsBufferMeters = uiState.gpsBufferMeters,
-                zoneStatus = uiState.zoneStatus,
-                distanceFromPinMeters = uiState.currentDistanceFromPinMeters,
-                onMapTapPin = onMapTapPin,
-                mapHeightDp = 210
-            )
-        }
-
-        // 5. Real Sensor Telemetry Grid
+        // 4. Real Sensor Telemetry Grid
         CrimsonPrecisionPanel {
             Text(
                 text = "ข้อมูลพารามิเตอร์จากเซ็นเซอร์จริง",
@@ -522,6 +488,8 @@ fun FixPointCoreTab(
                 }
             }
         }
+
+        Spacer(modifier = Modifier.height(112.dp))
     }
 }
 

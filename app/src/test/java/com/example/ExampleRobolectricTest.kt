@@ -82,9 +82,11 @@ class ExampleRobolectricTest {
         assertEquals(1, viewModel.uiState.value.savedLocations.size)
         assertEquals(ZoneMonitorStatus.INSIDE_ZONE, viewModel.uiState.value.zoneStatus)
 
-        // 3. Navigate to Pin & Zone Screen (หมุดและโซน) and test Radius Presets (1/5/10/20/30 km) & Paste Coordinates
+        // 3. Navigate to Pin & Zone Screen (หมุดและโซน) and test Leaflet Map, OSM Attribution, Radius Presets & Paste Coordinates
         composeTestRule.onNodeWithTag("nav_tab_saved_locations").performClick()
         composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("interactive_zone_map_canvas").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("osm_attribution_badge").assertIsDisplayed()
 
         composeTestRule.onNodeWithTag("btn_radius_preset_1").performScrollTo().performClick()
         composeTestRule.waitForIdle()
@@ -94,8 +96,11 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         assertEquals(10.0f, viewModel.uiState.value.zoneRadiusKm, 0.01f)
 
-        // Set radius to 1.0 km for out-of-zone test
+        // Set radius to 1.0 km and verify radius input & confirm button are visible and clickable
         composeTestRule.onNodeWithTag("btn_radius_preset_1").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("input_zone_radius_km").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_apply_radius_input").performScrollTo().assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
 
         // Pin Method 3: Paste Coordinates to add a second pin and select between pins

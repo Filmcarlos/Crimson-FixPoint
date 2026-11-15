@@ -78,13 +78,6 @@ import com.example.viewmodel.FixPointUiState
 import java.util.Locale
 import kotlin.math.roundToInt
 
-/**
- * Screen 2: หมุดและโซนรับงาน (Pinning & Work-Zone Radius Management Screen)
- * - 3 Pinning Methods: Current Real GPS, Tap on Map, Paste Coordinates
- * - Persistent Multiple Pins with Custom Names, Active Pin Selection (1 active), Move & Delete
- * - Work-Zone Radius Control: 0.0 to 30.0 km slider, 1-decimal text input, and 1/5/10/20/30 km presets
- * - Real-time Interactive Map with glowing crimson radius circle & auto-zoom
- */
 @Composable
 fun HotzonePinsTab(
     uiState: FixPointUiState,
@@ -126,7 +119,7 @@ fun HotzonePinsTab(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // 1. Interactive Map & Real-Time Radius Visualizer
+        // 1. Real OpenStreetMap Dark Map & Real-Time Radius Visualizer
         CrimsonPrecisionPanel {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -135,14 +128,13 @@ fun HotzonePinsTab(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "แผนที่ปักหมุดและรัศมีโซนรับงาน",
+                        text = "แผนที่หมุดและโซนรับงาน",
                         style = MaterialTheme.typography.titleLarge.copy(fontSize = 17.sp),
                         color = TextHudPrimary,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = activePin?.let { "หมุดที่ใช้งาน: ${it.name}" }
-                            ?: "แตะบนแผนที่หรือเลือกวิธีปักหมุดด้านล่าง",
+                        text = activePin?.let { "หมุดหลัก: ${it.name}" } ?: "หมุดหลัก: —",
                         style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
                         color = if (activePin != null) EmeraldSRank else TextHudMuted
                     )
@@ -151,20 +143,19 @@ fun HotzonePinsTab(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Map Tap Mode Selector (Move Active Pin vs Add New Pin)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 MapTapModeChip(
-                    label = "แตะแผนที่: ย้ายหมุดที่ใช้",
+                    label = "ย้ายหมุดหลัก",
                     selected = uiState.mapTapActionMode == MapTapActionMode.MOVE_ACTIVE_PIN,
                     onClick = { onSetMapTapMode(MapTapActionMode.MOVE_ACTIVE_PIN) },
                     modifier = Modifier.weight(1f),
                     testTag = "btn_tap_mode_move"
                 )
                 MapTapModeChip(
-                    label = "แตะแผนที่: เพิ่มหมุดใหม่",
+                    label = "เพิ่มหมุดใหม่",
                     selected = uiState.mapTapActionMode == MapTapActionMode.CREATE_NEW_PIN,
                     onClick = { onSetMapTapMode(MapTapActionMode.CREATE_NEW_PIN) },
                     modifier = Modifier.weight(1f),
@@ -184,14 +175,14 @@ fun HotzonePinsTab(
                 zoneStatus = uiState.zoneStatus,
                 distanceFromPinMeters = uiState.currentDistanceFromPinMeters,
                 onMapTapPin = onMapTapPin,
-                mapHeightDp = 255
+                mapHeightDp = 265
             )
         }
 
-        // 2. 3 Pinning Methods Panel (ปักหมุดได้ 3 แบบ: ตำแหน่งปัจจุบันจริง, แตะบนแผนที่, วางพิกัด)
+        // 2. Pinning Actions Panel
         CrimsonPrecisionPanel {
             Text(
-                text = "เครื่องมือปักหมุดและย้ายหมุด",
+                text = "จัดการตำแหน่งหมุด",
                 style = MaterialTheme.typography.titleMedium,
                 color = TextHudPrimary,
                 fontWeight = FontWeight.Bold
@@ -203,7 +194,7 @@ fun HotzonePinsTab(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 ChamferedActionButton(
-                    label = "ใช้ตำแหน่งปัจจุบัน",
+                    label = "ตำแหน่งปัจจุบัน",
                     icon = Icons.Default.MyLocation,
                     enabled = hasActiveFix,
                     isPrimaryCrimson = hasActiveFix,
@@ -227,7 +218,6 @@ fun HotzonePinsTab(
                 )
             }
 
-            // Inline Panel A: Pin or Move using Current Real GPS
             if (showCurrentGpsPinPanel && hasActiveFix) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Column(
@@ -240,7 +230,7 @@ fun HotzonePinsTab(
                         .testTag("dialog_save_from_list")
                 ) {
                     Text(
-                        text = "ปักหมุดด้วยตำแหน่ง GPS จริงปัจจุบัน",
+                        text = "ตำแหน่ง GPS ปัจจุบัน",
                         style = MaterialTheme.typography.titleMedium,
                         color = TextHudPrimary,
                         fontWeight = FontWeight.Bold
@@ -259,7 +249,7 @@ fun HotzonePinsTab(
                     OutlinedTextField(
                         value = nameInput,
                         onValueChange = { nameInput = it },
-                        label = { Text("ชื่อหมุดโซนรับงาน") },
+                        label = { Text("ชื่อหมุด") },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = CrimsonNeon,
@@ -290,7 +280,7 @@ fun HotzonePinsTab(
                         )
                         if (activePin != null) {
                             ChamferedActionButton(
-                                label = "ย้ายหมุดที่ใช้มาจุดนี้",
+                                label = "ย้ายหมุดหลัก",
                                 icon = Icons.Default.EditLocationAlt,
                                 onClick = {
                                     onSaveCurrentLocation(nameInput, true)
@@ -305,7 +295,6 @@ fun HotzonePinsTab(
                 }
             }
 
-            // Inline Panel B: Pin or Move by Pasting / Typing Coordinates
             if (showPasteCoordsPanel) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Column(
@@ -323,7 +312,7 @@ fun HotzonePinsTab(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "ปักหมุดหรือย้ายหมุดด้วยการวางพิกัด",
+                            text = "พิกัดหมุด",
                             style = MaterialTheme.typography.titleMedium,
                             color = TextHudPrimary,
                             fontWeight = FontWeight.Bold
@@ -365,7 +354,7 @@ fun HotzonePinsTab(
                             pasteCoordinateInput = it
                             pasteErrorTh = null
                         },
-                        label = { Text("พิกัด (ละติจูด, ลองจิจูด)") },
+                        label = { Text("ละติจูด, ลองจิจูด") },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = CrimsonNeon,
@@ -383,7 +372,7 @@ fun HotzonePinsTab(
                     OutlinedTextField(
                         value = pasteNameInput,
                         onValueChange = { pasteNameInput = it },
-                        label = { Text("ชื่อหมุด (ตั้งชื่อได้)") },
+                        label = { Text("ชื่อหมุด") },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = CrimsonNeon,
@@ -427,7 +416,7 @@ fun HotzonePinsTab(
                                     pasteErrorTh = null
                                     showPasteCoordsPanel = false
                                 } else {
-                                    pasteErrorTh = "รูปแบบพิกัดไม่ถูกต้อง กรุณาระบุละติจูดและลองจิจูด"
+                                    pasteErrorTh = "พิกัดไม่ถูกต้อง"
                                 }
                             },
                             modifier = Modifier.weight(1f),
@@ -435,7 +424,7 @@ fun HotzonePinsTab(
                         )
                         if (activePin != null) {
                             ChamferedActionButton(
-                                label = "ย้ายหมุดที่เลือก",
+                                label = "ย้ายหมุดหลัก",
                                 icon = Icons.Default.EditLocationAlt,
                                 onClick = {
                                     val ok = onPinOrMoveFromCoordinates(
@@ -449,7 +438,7 @@ fun HotzonePinsTab(
                                         pasteErrorTh = null
                                         showPasteCoordsPanel = false
                                     } else {
-                                        pasteErrorTh = "รูปแบบพิกัดไม่ถูกต้อง กรุณาระบุละติจูดและลองจิจูด"
+                                        pasteErrorTh = "พิกัดไม่ถูกต้อง"
                                     }
                                 },
                                 modifier = Modifier.weight(1f),
@@ -461,7 +450,7 @@ fun HotzonePinsTab(
             }
         }
 
-        // 3. Work-Zone Radius Configuration Panel (กำหนดรัศมี 0 ถึง 30 กม.)
+        // 3. Work-Zone Radius Configuration Panel (0.0 - 30.0 กม.)
         CrimsonPrecisionPanel {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -479,7 +468,7 @@ fun HotzonePinsTab(
                         modifier = Modifier.size(19.dp)
                     )
                     Text(
-                        text = "กำหนดรัศมีโซนรับงาน (0 - 30 กม.)",
+                        text = "รัศมีโซนรับงาน",
                         style = MaterialTheme.typography.titleMedium,
                         color = TextHudPrimary,
                         fontWeight = FontWeight.Bold
@@ -496,7 +485,6 @@ fun HotzonePinsTab(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Fine Slider (0.0 to 30.0 km, 0.1 km precision)
             Slider(
                 value = uiState.zoneRadiusKm,
                 onValueChange = { rawValue ->
@@ -514,7 +502,6 @@ fun HotzonePinsTab(
                     .testTag("slider_zone_radius")
             )
 
-            // Quick Preset Buttons: 1 / 5 / 10 / 20 / 30 km
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -554,9 +541,8 @@ fun HotzonePinsTab(
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            // Exact Numeric Input (1 decimal place, 0.0 - 30.0 km)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -572,7 +558,7 @@ fun HotzonePinsTab(
                             onSetZoneRadiusKm(oneDecimal)
                         }
                     },
-                    label = { Text("ระบุตัวเลขรัศมี (0.0 - 30.0 กม.)") },
+                    label = { Text("รัศมี (กม.)") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -598,12 +584,13 @@ fun HotzonePinsTab(
                             radiusTextInput = String.format(Locale.US, "%.1f", clamped)
                         }
                     },
+                    modifier = Modifier.height(54.dp),
                     testTag = "btn_apply_radius_input"
                 )
             }
         }
 
-        // 4. Saved Pins List (รายการหมุดโซนรับงานทั้งหมด - เลือกหมุดใช้งาน 1 จุด, ย้าย, ลบ)
+        // 4. Saved Pins List
         CrimsonPrecisionPanel {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -611,13 +598,13 @@ fun HotzonePinsTab(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "รายการหมุดที่บันทึกไว้ (${uiState.savedLocations.size})",
+                    text = "รายการหมุด (${uiState.savedLocations.size})",
                     style = MaterialTheme.typography.titleMedium,
                     color = TextHudPrimary,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = if (activePin != null) "เลือกใช้งาน 1 จุด" else "ยังไม่มีหมุด",
+                    text = activePin?.name ?: "—",
                     style = MaterialTheme.typography.labelMedium,
                     color = if (activePin != null) EmeraldSRank else TextHudMuted
                 )
@@ -644,7 +631,7 @@ fun HotzonePinsTab(
                             modifier = Modifier.size(36.dp)
                         )
                         Text(
-                            text = "ยังไม่มีรายการหมุดที่บันทึกไว้",
+                            text = "ไม่มีรายการหมุด",
                             style = MaterialTheme.typography.titleMedium,
                             color = TextHudSecondary
                         )
@@ -675,6 +662,9 @@ fun HotzonePinsTab(
                 }
             }
         }
+
+        // Generous bottom spacing so all inputs & buttons scroll well past the bottom bar
+        Spacer(modifier = Modifier.height(112.dp))
     }
 }
 
@@ -721,7 +711,7 @@ private fun MapTapModeChip(
             Spacer(modifier = Modifier.width(5.dp))
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.5.sp),
+                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
                 color = if (selected) TextHudPrimary else TextHudSecondary,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
             )
@@ -784,7 +774,7 @@ private fun SavedLocationCard(
                 }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "บันทึกเมื่อ: ${item.formattedTimestamp()}",
+                    text = item.formattedTimestamp(),
                     style = MaterialTheme.typography.labelSmall,
                     color = TextHudMuted
                 )
@@ -806,7 +796,7 @@ private fun SavedLocationCard(
                     .testTag("btn_select_active_pin_${item.id}")
             ) {
                 Text(
-                    text = if (isActivePin) "หมุดที่ใช้งานอยู่" else "เลือกใช้หมุดนี้",
+                    text = if (isActivePin) "ใช้งานอยู่" else "เลือกใช้",
                     style = MaterialTheme.typography.labelMedium,
                     color = if (isActivePin) EmeraldSRank else TextHudPrimary,
                     fontWeight = FontWeight.Bold
@@ -865,7 +855,7 @@ private fun SavedLocationCard(
                 OutlinedTextField(
                     value = editCoordText,
                     onValueChange = { editCoordText = it },
-                    label = { Text("พิกัดใหม่ (ละติจูด, ลองจิจูด)") },
+                    label = { Text("ละติจูด, ลองจิจูด") },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = CrimsonNeon,
@@ -889,7 +879,7 @@ private fun SavedLocationCard(
                         modifier = Modifier.weight(1f)
                     )
                     ChamferedActionButton(
-                        label = "บันทึกการย้าย",
+                        label = "บันทึก",
                         icon = Icons.Default.CheckCircle,
                         isPrimaryCrimson = true,
                         onClick = {
@@ -935,7 +925,7 @@ private fun SavedLocationCard(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             ChamferedActionButton(
-                label = "ย้าย/แก้ไขหมุด",
+                label = "ย้ายหมุด",
                 icon = Icons.Default.EditLocationAlt,
                 isPrimaryCrimson = true,
                 onClick = { showMoveEditor = !showMoveEditor },

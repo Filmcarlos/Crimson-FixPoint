@@ -458,6 +458,8 @@ fun SmartOrderFilterTab(
                 testTag = "setting_keep_screen_on_toggle"
             )
         }
+
+        Spacer(modifier = Modifier.height(112.dp))
     }
 }
 

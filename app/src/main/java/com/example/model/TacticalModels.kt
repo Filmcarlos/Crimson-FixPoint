@@ -19,33 +19,33 @@ enum class AppScreen(val titleTh: String) {
 }
 
 enum class GpsLockState(val labelTh: String, val subLabelTh: String) {
-    OFF("ปิดการทำงาน", "ระบบล็อกสัญญาณอยู่ในสถานะพัก"),
-    SEARCHING("กำลังค้นหาสัญญาณ", "กำลังสแกนและเชื่อมต่อดาวเทียม GNSS"),
-    LOCKED("ล็อกสัญญาณแล้ว", "ตรึงสัญญาณพิกัดและตรวจโซนต่อเนื่อง")
+    OFF("ปิดการทำงาน", "สถานะพัก"),
+    SEARCHING("กำลังค้นหาสัญญาณ", "สแกนดาวเทียม GNSS"),
+    LOCKED("ล็อกสัญญาณแล้ว", "ตรึงสัญญาณพิกัด")
 }
 
 enum class ZoneMonitorStatus(
     val titleTh: String,
     val detailTh: String
 ) {
-    NO_ACTIVE_PIN("ยังไม่ได้เลือกหมุดโซน", "เลือกหรือปักหมุดเพื่อเริ่มตรวจรัศมีโซนรับงาน"),
-    WAITING_FOR_GPS("รอสัญญาณตำแหน่ง GPS", "กำลังค้นหาตำแหน่งจริงจากดาวเทียมเพื่อคำนวณระยะห่าง"),
-    INSIDE_ZONE("อยู่ในโซนรับงาน", "ตำแหน่งปัจจุบันอยู่ในเขตรัศมีที่กำหนด"),
-    OUTSIDE_ZONE("ออกนอกโซนรับงานแล้ว", "ตำแหน่งปัจจุบันออกนอกเขตรัศมีที่กำหนด")
+    NO_ACTIVE_PIN("ไม่มีหมุดโซน", "หมุดหลัก: —"),
+    WAITING_FOR_GPS("รอสัญญาณ GPS", "พิกัดปัจจุบัน: —"),
+    INSIDE_ZONE("อยู่ในโซนรับงาน", "ภายในรัศมีที่กำหนด"),
+    OUTSIDE_ZONE("ออกนอกโซนรับงานแล้ว", "เกินรัศมีที่กำหนด")
 }
 
 enum class ZoneAlertTone(
     val titleTh: String,
     val subtitleTh: String
 ) {
-    SIREN_DUAL("สัญญาณเตือนภัยสองจังหวะ", "คลื่นความถี่สลับสูง-ต่ำ คมชัดสำหรับแจ้งเตือนฉุกเฉิน"),
-    HIGH_PULSE("พัลส์ความถี่สูงคู่", "เสียงบี๊บคู่ความถี่สูง ตัดเสียงรบกวนรอบข้าง"),
-    SONAR_DEEP("คลื่นโซนาร์ทุ้มลึก", "สัญญาณคลื่นความถี่ต่ำนุ่มลึกชัดเจน")
+    SIREN_DUAL("สัญญาณเตือนภัยสองจังหวะ", "880 Hz / 622 Hz"),
+    HIGH_PULSE("พัลส์ความถี่สูงคู่", "1397 Hz / 1760 Hz"),
+    SONAR_DEEP("คลื่นโซนาร์ทุ้มลึก", "330 Hz / 220 Hz")
 }
 
 enum class MapTapActionMode(val labelTh: String) {
-    MOVE_ACTIVE_PIN("แตะแผนที่เพื่อย้ายหมุดที่เลือก"),
-    CREATE_NEW_PIN("แตะแผนที่เพื่อปักหมุดใหม่")
+    MOVE_ACTIVE_PIN("ย้ายหมุดหลัก"),
+    CREATE_NEW_PIN("เพิ่มหมุดใหม่")
 }
 
 enum class MeasurementUnit(
@@ -64,9 +64,9 @@ enum class UpdateFrequency(
     val intervalMillis: Long,
     val minIntervalMillis: Long
 ) {
-    HIGH_PRECISION("ความถี่สูงสุด (0.5 วินาที)", "อัปเดตพิกัดทุก 0.5 วินาที ความแม่นยำสูงสุด", 500L, 250L),
-    STANDARD("มาตรฐาน (1 วินาที)", "อัปเดตพิกัดทุก 1 วินาที สมดุลความแม่นยำและพลังงาน", 1000L, 500L),
-    BATTERY_SAVER("ประหยัดพลังงาน (3 วินาที)", "อัปเดตพิกัดทุก 3 วินาที สำหรับเปิดค้างเวลานาน", 3000L, 1500L)
+    HIGH_PRECISION("ความถี่สูงสุด (0.5 วินาที)", "500 มิลลิวินาที", 500L, 250L),
+    STANDARD("มาตรฐาน (1 วินาที)", "1,000 มิลลิวินาที", 1000L, 500L),
+    BATTERY_SAVER("ประหยัดพลังงาน (3 วินาที)", "3,000 มิลลิวินาที", 3000L, 1500L)
 }
 
 enum class CoordinateFormat(val titleTh: String) {
