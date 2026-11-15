@@ -1,5 +1,11 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -15,21 +21,26 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BookmarkAdd
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Landscape
-import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.SatelliteAlt
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -50,16 +61,18 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import com.example.model.GeoMath
+import com.example.model.ZoneMonitorStatus
 import com.example.ui.components.CentralPowerCoreDial
 import com.example.ui.components.ChamferedActionButton
 import com.example.ui.components.CrimsonPrecisionPanel
+import com.example.ui.components.InteractiveZoneMapCanvas
 import com.example.ui.components.PrecisionButtonShape
 import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CrimsonBorderGlow
 import com.example.ui.theme.CrimsonNeon
 import com.example.ui.theme.CrimsonRed
+import com.example.ui.theme.EmeraldSRank
 import com.example.ui.theme.ObsidianBlack
 import com.example.ui.theme.TextHudMuted
 import com.example.ui.theme.TextHudPrimary
@@ -73,8 +86,10 @@ fun FixPointCoreTab(
     onTogglePower: () -> Unit,
     onCopyCoordinates: (Double, Double) -> Unit,
     onShareCoordinates: (Double, Double) -> Unit,
-    onOpenInMaps: (Double, Double) -> Unit,
     onSaveLocation: (String) -> Unit,
+    onMapTapPin: (Double, Double) -> Unit,
+    onMuteZoneAlert: () -> Unit,
+    onNavigateToZoneTab: () -> Unit,
     onRequestLocationPermission: () -> Unit,
     onOpenAppSettings: () -> Unit,
     modifier: Modifier = Modifier
@@ -99,7 +114,7 @@ fun FixPointCoreTab(
                 modifier = Modifier.testTag("dialog_save_location")
             ) {
                 Text(
-                    text = "บันทึกตำแหน่งปัจจุบัน",
+                    text = "ปักหมุดตำแหน่งปัจจุบัน",
                     style = MaterialTheme.typography.titleLarge,
                     color = TextHudPrimary
                 )
@@ -117,7 +132,7 @@ fun FixPointCoreTab(
                 OutlinedTextField(
                     value = locationNameInput,
                     onValueChange = { locationNameInput = it },
-                    label = { Text("ชื่อสถานที่หรือจุดอ้างอิง") },
+                    label = { Text("ชื่อหมุดโซนรับงาน") },
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = CrimsonNeon,
@@ -144,7 +159,7 @@ fun FixPointCoreTab(
                         testTag = "btn_cancel_save_location"
                     )
                     ChamferedActionButton(
-                        label = "บันทึก",
+                        label = "บันทึกหมุด",
                         icon = Icons.Default.BookmarkAdd,
                         isPrimaryCrimson = true,
                         onClick = {
@@ -166,37 +181,54 @@ fun FixPointCoreTab(
                 glowAlpha = 0.18f,
                 modifier = Modifier.testTag("permission_warning_panel")
             ) {
-                Text(
-                    text = uiState.permissionDeniedMessageTh ?: "ต้องการสิทธิ์การเข้าถึงตำแหน่งแม่นยำ",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = AmberWarning,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Security,
+                        contentDescription = null,
+                        tint = AmberWarning,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        text = uiState.permissionDeniedMessageTh ?: "ต้องการสิทธิ์การเข้าถึงตำแหน่งแม่นยำ",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextHudPrimary
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     ChamferedActionButton(
-                        label = "อนุญาตสิทธิ์",
-                        icon = Icons.Default.Security,
+                        label = "อนุญาตสิทธิ์ตำแหน่ง",
+                        icon = Icons.Default.GpsFixed,
                         isPrimaryCrimson = true,
                         onClick = onRequestLocationPermission,
                         modifier = Modifier.weight(1f),
-                        testTag = "btn_request_permission"
+                        testTag = "btn_request_location_permission"
                     )
                     ChamferedActionButton(
-                        label = "ตั้งค่าสิทธิ์แอป",
+                        label = "ตั้งค่าระบบ",
                         icon = Icons.Default.Settings,
                         onClick = onOpenAppSettings,
                         modifier = Modifier.weight(1f),
-                        testTag = "btn_open_app_settings"
+                        testTag = "btn_open_system_settings"
                     )
                 }
             }
         }
 
-        // 1. Centerpiece Power Toggle Dial & Radar
+        // 1. Work-Zone Status Card: Green when INSIDE_ZONE, Blinking Red when OUTSIDE_ZONE
+        ZoneMonitorStatusCard(
+            uiState = uiState,
+            onMuteZoneAlert = onMuteZoneAlert,
+            onNavigateToZoneTab = onNavigateToZoneTab
+        )
+
+        // 2. Centerpiece Main Power Toggle Button (ปุ่มเปิด/ปิดขนาดใหญ่ตรงกลางหน้าหลัก)
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
@@ -210,17 +242,33 @@ fun FixPointCoreTab(
             )
         }
 
-        // 2. Primary Coordinate Readout Panel (Latitude & Longitude)
-        CrimsonPrecisionPanel(
-            borderColor = if (hasCoordinates) CrimsonNeon.copy(alpha = 0.7f) else CrimsonBorderGlow,
-            glowAlpha = if (hasCoordinates) 0.22f else 0.08f
-        ) {
+        // 3. Primary Coordinate Readout Panel (พิกัดละติจูด / ลองจิจูด + ปุ่มคำสั่ง)
+        CrimsonPrecisionPanel {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "พิกัดตำแหน่งดาวเทียม",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextHudSecondary
+                )
+                Text(
+                    text = if (telemetry.hasFix) "รับข้อมูลจริงจากเซ็นเซอร์" else "รอสัญญาณดาวเทียม",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (telemetry.hasFix) CrimsonNeon else TextHudMuted
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 CoordinateValueBox(
-                    label = "ละติจูด",
+                    label = "ละติจูด (LATITUDE)",
                     value = GeoMath.formatCoordinate(
                         telemetry.latitude,
                         isLatitude = true,
@@ -231,7 +279,7 @@ fun FixPointCoreTab(
                         .testTag("readout_latitude")
                 )
                 CoordinateValueBox(
-                    label = "ลองจิจูด",
+                    label = "ลองจิจูด (LONGITUDE)",
                     value = GeoMath.formatCoordinate(
                         telemetry.longitude,
                         isLatitude = false,
@@ -245,7 +293,7 @@ fun FixPointCoreTab(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // 4 Functional Coordinate Action Buttons
+            // Action Buttons (Copy, Share, Pin Current Location, Configure Zone)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -255,9 +303,11 @@ fun FixPointCoreTab(
                     icon = Icons.Default.ContentCopy,
                     enabled = hasCoordinates,
                     onClick = {
-                        val lat = telemetry.latitude ?: return@ChamferedActionButton
-                        val lng = telemetry.longitude ?: return@ChamferedActionButton
-                        onCopyCoordinates(lat, lng)
+                        val lat = telemetry.latitude
+                        val lng = telemetry.longitude
+                        if (lat != null && lng != null) {
+                            onCopyCoordinates(lat, lng)
+                        }
                     },
                     modifier = Modifier.weight(1f),
                     testTag = "btn_copy_coordinates"
@@ -267,9 +317,11 @@ fun FixPointCoreTab(
                     icon = Icons.Default.Share,
                     enabled = hasCoordinates,
                     onClick = {
-                        val lat = telemetry.latitude ?: return@ChamferedActionButton
-                        val lng = telemetry.longitude ?: return@ChamferedActionButton
-                        onShareCoordinates(lat, lng)
+                        val lat = telemetry.latitude
+                        val lng = telemetry.longitude
+                        if (lat != null && lng != null) {
+                            onShareCoordinates(lat, lng)
+                        }
                     },
                     modifier = Modifier.weight(1f),
                     testTag = "btn_share_coordinates"
@@ -283,16 +335,11 @@ fun FixPointCoreTab(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 ChamferedActionButton(
-                    label = "เปิดแผนที่",
-                    icon = Icons.Default.Map,
-                    enabled = hasCoordinates,
-                    onClick = {
-                        val lat = telemetry.latitude ?: return@ChamferedActionButton
-                        val lng = telemetry.longitude ?: return@ChamferedActionButton
-                        onOpenInMaps(lat, lng)
-                    },
+                    label = "ตั้งค่ารัศมีโซน",
+                    icon = Icons.Default.Radar,
+                    onClick = onNavigateToZoneTab,
                     modifier = Modifier.weight(1f),
-                    testTag = "btn_open_google_maps"
+                    testTag = "btn_open_maps"
                 )
                 ChamferedActionButton(
                     label = "บันทึกตำแหน่ง",
@@ -306,8 +353,49 @@ fun FixPointCoreTab(
             }
         }
 
-        // 3. Real Sensor Telemetry Grid (Accuracy, Altitude, Speed, Direction, Satellites, Signal Quality)
+        // 4. Live Interactive Zone Map Preview on Home Screen
         CrimsonPrecisionPanel {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "แผนที่หมุดและวงกลมรัศมีรับงาน",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextHudPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = String.format(Locale.US, "รัศมี %.1f กม.", uiState.zoneRadiusKm),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = CrimsonNeon
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            InteractiveZoneMapCanvas(
+                activePin = uiState.activePin,
+                allPins = uiState.savedLocations,
+                userLatitude = telemetry.latitude,
+                userLongitude = telemetry.longitude,
+                radiusKm = uiState.zoneRadiusKm,
+                gpsBufferMeters = uiState.gpsBufferMeters,
+                zoneStatus = uiState.zoneStatus,
+                distanceFromPinMeters = uiState.currentDistanceFromPinMeters,
+                onMapTapPin = onMapTapPin,
+                mapHeightDp = 210
+            )
+        }
+
+        // 5. Real Sensor Telemetry Grid
+        CrimsonPrecisionPanel {
+            Text(
+                text = "ข้อมูลพารามิเตอร์จากเซ็นเซอร์จริง",
+                style = MaterialTheme.typography.titleMedium,
+                color = TextHudSecondary
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -322,7 +410,7 @@ fun FixPointCoreTab(
                 )
                 SensorMetricTile(
                     icon = Icons.Default.Landscape,
-                    title = "ความสูง",
+                    title = "ความสูงจากระดับน้ำทะเล",
                     value = GeoMath.formatAltitude(telemetry.altitudeMeters, uiState.measurementUnit),
                     modifier = Modifier
                         .weight(1f)
@@ -362,12 +450,8 @@ fun FixPointCoreTab(
             ) {
                 SensorMetricTile(
                     icon = Icons.Default.SatelliteAlt,
-                    title = "ดาวเทียมที่ใช้งาน",
-                    value = if (uiState.isLockEnabled) {
-                        "${telemetry.satellitesUsedInFix} / ${telemetry.satellitesVisible} ดวง"
-                    } else {
-                        "—"
-                    },
+                    title = "ดาวเทียม (ใช้งาน/มองเห็น)",
+                    value = "${telemetry.satellitesUsedInFix} / ${telemetry.satellitesVisible} ดวง",
                     modifier = Modifier
                         .weight(1f)
                         .testTag("metric_satellites")
@@ -375,65 +459,264 @@ fun FixPointCoreTab(
                 SensorMetricTile(
                     icon = Icons.Default.SignalCellularAlt,
                     title = "คุณภาพสัญญาณ",
-                    value = if (uiState.isLockEnabled) {
-                        if (telemetry.averageSnrDbHz > 0f) {
-                            "${telemetry.signalQualityLabelTh} (${String.format(Locale.US, "%.1f", telemetry.averageSnrDbHz)} dB-Hz)"
-                        } else {
-                            telemetry.signalQualityLabelTh
-                        }
-                    } else {
-                        "—"
-                    },
+                    value = telemetry.signalQualityLabelTh,
                     modifier = Modifier
                         .weight(1f)
                         .testTag("metric_signal_quality")
                 )
             }
 
-            // Live Satellite SNR Bars (when hardware reports visible satellites)
-            if (uiState.isLockEnabled && telemetry.satelliteBars.isNotEmpty()) {
+            if (telemetry.satelliteBars.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(14.dp))
+                Text(
+                    text = "ความแรงสัญญาณดาวเทียมรายดวง (C/N0 dB-Hz)",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = TextHudMuted
+                )
+                Spacer(modifier = Modifier.height(8.dp))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(78.dp)
+                        .height(56.dp)
                         .clip(PrecisionButtonShape)
-                        .background(ObsidianBlack)
+                        .background(Color(0xFF09080C))
                         .border(1.dp, CrimsonBorderGlow, PrecisionButtonShape)
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.Bottom
                 ) {
-                    telemetry.satelliteBars.forEach { sat ->
-                        val ratio = (sat.cn0DbHz / 50f).coerceIn(0.12f, 1.0f)
+                    telemetry.satelliteBars.take(10).forEach { bar ->
+                        val heightFraction = (bar.cn0DbHz / 50f).coerceIn(0.12f, 1f)
                         Column(
+                            modifier = Modifier.weight(1f),
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Bottom,
-                            modifier = Modifier.fillMaxHeight()
+                            verticalArrangement = Arrangement.Bottom
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .width(12.dp)
-                                    .fillMaxHeight(ratio * 0.72f)
-                                    .background(
-                                        Brush.verticalGradient(
-                                            colors = if (sat.usedInFix) {
-                                                listOf(CrimsonNeon, CrimsonRed)
+                                    .fillMaxWidth()
+                                    .weight(1f),
+                                contentAlignment = Alignment.BottomCenter
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.75f)
+                                        .fillMaxHeight(heightFraction)
+                                        .background(
+                                            if (bar.usedInFix) {
+                                                Brush.verticalGradient(listOf(CrimsonNeon, CrimsonRed))
                                             } else {
-                                                listOf(Color(0xFF52525B), Color(0xFF27272F))
+                                                Brush.verticalGradient(listOf(Color(0xFF52525B), Color(0xFF27272A)))
                                             }
                                         )
-                                    )
-                            )
-                            Spacer(modifier = Modifier.height(3.dp))
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "${sat.constellationLabel}${sat.svid}",
-                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.5.sp),
-                                color = if (sat.usedInFix) CrimsonNeon else TextHudMuted
+                                text = "${bar.svid}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                color = if (bar.usedInFix) TextHudPrimary else TextHudMuted
                             )
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Prominent Work-Zone Status Card on Main Screen:
+ * - INSIDE_ZONE: Emerald Green (#00E676) glowing border & status badge
+ * - OUTSIDE_ZONE: Blinking Crimson Red (#F43F5E) alert panel with excess distance + Mute Alert button
+ */
+@Composable
+private fun ZoneMonitorStatusCard(
+    uiState: FixPointUiState,
+    onMuteZoneAlert: () -> Unit,
+    onNavigateToZoneTab: () -> Unit
+) {
+    val status = uiState.zoneStatus
+    val activePin = uiState.activePin
+
+    val blinkFraction: Float = if (status == ZoneMonitorStatus.OUTSIDE_ZONE) {
+        val infiniteTransition = rememberInfiniteTransition(label = "zone_status_blink")
+        val anim by infiniteTransition.animateFloat(
+            initialValue = 0.25f,
+            targetValue = 1.0f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 480, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "outside_zone_blink_alpha"
+        )
+        anim
+    } else {
+        1.0f
+    }
+
+    val panelBorderColor = when (status) {
+        ZoneMonitorStatus.INSIDE_ZONE -> EmeraldSRank
+        ZoneMonitorStatus.OUTSIDE_ZONE -> CrimsonNeon.copy(alpha = blinkFraction)
+        ZoneMonitorStatus.WAITING_FOR_GPS -> AmberWarning.copy(alpha = 0.75f)
+        ZoneMonitorStatus.NO_ACTIVE_PIN -> CrimsonBorderGlow
+    }
+
+    val statusAccentColor = when (status) {
+        ZoneMonitorStatus.INSIDE_ZONE -> EmeraldSRank
+        ZoneMonitorStatus.OUTSIDE_ZONE -> CrimsonNeon
+        ZoneMonitorStatus.WAITING_FOR_GPS -> AmberWarning
+        ZoneMonitorStatus.NO_ACTIVE_PIN -> TextHudSecondary
+    }
+
+    CrimsonPrecisionPanel(
+        borderColor = panelBorderColor,
+        glowAlpha = when (status) {
+            ZoneMonitorStatus.OUTSIDE_ZONE -> 0.35f * blinkFraction
+            ZoneMonitorStatus.INSIDE_ZONE -> 0.18f
+            else -> 0.12f
+        },
+        modifier = Modifier.testTag("zone_status_banner_panel")
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(statusAccentColor.copy(alpha = 0.18f * blinkFraction))
+                        .border(1.5.dp, statusAccentColor.copy(alpha = blinkFraction), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = when (status) {
+                            ZoneMonitorStatus.INSIDE_ZONE -> Icons.Default.CheckCircle
+                            ZoneMonitorStatus.OUTSIDE_ZONE -> Icons.Default.WarningAmber
+                            else -> Icons.Default.Place
+                        },
+                        contentDescription = null,
+                        tint = statusAccentColor,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                Column {
+                    Text(
+                        text = status.titleTh,
+                        style = MaterialTheme.typography.titleLarge.copy(fontSize = 16.5.sp),
+                        color = statusAccentColor,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.testTag("zone_status_title_text")
+                    )
+                    Text(
+                        text = if (activePin != null) {
+                            "หมุดที่ใช้งาน: ${activePin.name} (รัศมี ${String.format(Locale.US, "%.1f", uiState.zoneRadiusKm)} กม.)"
+                        } else {
+                            status.detailTh
+                        },
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
+                        color = TextHudSecondary
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .clip(PrecisionButtonShape)
+                    .background(statusAccentColor.copy(alpha = 0.16f * blinkFraction))
+                    .border(1.dp, statusAccentColor, PrecisionButtonShape)
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
+            ) {
+                Text(
+                    text = when (status) {
+                        ZoneMonitorStatus.INSIDE_ZONE -> "ในโซน"
+                        ZoneMonitorStatus.OUTSIDE_ZONE -> "นอกโซน"
+                        ZoneMonitorStatus.WAITING_FOR_GPS -> "รอ GPS"
+                        ZoneMonitorStatus.NO_ACTIVE_PIN -> "ไม่มีหมุด"
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                    color = statusAccentColor,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        if (activePin != null) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(PrecisionButtonShape)
+                    .background(Color(0xFF09080C))
+                    .border(1.dp, panelBorderColor.copy(alpha = 0.6f), PrecisionButtonShape)
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "ระยะห่างจากหมุดตอนนี้",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextHudMuted
+                    )
+                    Text(
+                        text = GeoMath.formatZoneDistanceTh(uiState.currentDistanceFromPinMeters),
+                        style = MaterialTheme.typography.titleMedium.copy(fontSize = 14.5.sp),
+                        color = TextHudPrimary,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.testTag("home_distance_from_pin_text")
+                    )
+                }
+
+                if (status == ZoneMonitorStatus.OUTSIDE_ZONE) {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = "ระยะที่เกินโซน",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CrimsonNeon
+                        )
+                        Text(
+                            text = "+${GeoMath.formatShortZoneDistanceTh(uiState.excessDistanceMeters)}",
+                            style = MaterialTheme.typography.titleMedium.copy(fontSize = 14.5.sp),
+                            color = CrimsonNeon,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.testTag("home_excess_distance_text")
+                        )
+                    }
+                }
+            }
+        }
+
+        if (status == ZoneMonitorStatus.OUTSIDE_ZONE) {
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                ChamferedActionButton(
+                    label = if (uiState.isZoneAlertMuted) "ปิดเสียงเตือนแล้ว" else "ปิดเสียงเตือน",
+                    icon = Icons.Default.NotificationsOff,
+                    enabled = !uiState.isZoneAlertMuted,
+                    isPrimaryCrimson = !uiState.isZoneAlertMuted,
+                    onClick = onMuteZoneAlert,
+                    modifier = Modifier.weight(1f),
+                    testTag = "btn_mute_zone_alert"
+                )
+                ChamferedActionButton(
+                    label = "ปรับรัศมี/หมุด",
+                    icon = Icons.Default.Place,
+                    onClick = onNavigateToZoneTab,
+                    modifier = Modifier.weight(1f),
+                    testTag = "btn_adjust_zone_from_alert"
+                )
             }
         }
     }
@@ -448,13 +731,13 @@ private fun CoordinateValueBox(
     Column(
         modifier = modifier
             .clip(PrecisionButtonShape)
-            .background(Color(0xFF0A080C))
+            .background(ObsidianBlack)
             .border(1.dp, CrimsonBorderGlow, PrecisionButtonShape)
             .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelSmall,
             color = TextHudMuted
         )
         Spacer(modifier = Modifier.height(4.dp))
@@ -476,37 +759,42 @@ private fun SensorMetricTile(
     value: String,
     modifier: Modifier = Modifier
 ) {
-    Column(
+    Row(
         modifier = modifier
             .clip(PrecisionButtonShape)
             .background(Color(0xFF0A090D))
-            .border(1.dp, Color(0xFF2A1820), PrecisionButtonShape)
-            .padding(horizontal = 12.dp, vertical = 11.dp),
-        verticalArrangement = Arrangement.spacedBy(5.dp)
+            .border(1.dp, Color(0xFF281920), PrecisionButtonShape)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(34.dp)
+                .clip(PrecisionButtonShape)
+                .background(Color(0xFF1A0E14))
+                .border(1.dp, CrimsonBorderGlow, PrecisionButtonShape)
         ) {
             Icon(
                 imageVector = icon,
-                contentDescription = null,
+                contentDescription = title,
                 tint = CrimsonNeon,
-                modifier = Modifier.size(15.dp)
-            )
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.sp),
-                color = TextHudSecondary
+                modifier = Modifier.size(18.dp)
             )
         }
-        Text(
-            text = value,
-            style = MaterialTheme.typography.labelLarge.copy(
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold
-            ),
-            color = TextHudPrimary
-        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Column {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.5.sp),
+                color = TextHudMuted
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = value,
+                style = MaterialTheme.typography.labelLarge.copy(fontSize = 14.sp),
+                color = TextHudPrimary
+            )
+        }
     }
 }

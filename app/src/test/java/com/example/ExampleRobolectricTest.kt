@@ -9,6 +9,11 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
+import com.example.model.CoordinateFormat
+import com.example.model.MeasurementUnit
+import com.example.model.UpdateFrequency
+import com.example.model.ZoneAlertTone
+import com.example.model.ZoneMonitorStatus
 import com.example.ui.theme.MyApplicationTheme
 import com.example.viewmodel.FixPointViewModel
 import org.junit.Assert.assertEquals
@@ -35,7 +40,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test all screens and interactive buttons end to end`() {
+    fun `test all screens pinning radius geofence alerts and interactive buttons end to end`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val viewModel = FixPointViewModel()
         viewModel.initialize(context)
@@ -49,16 +54,15 @@ class ExampleRobolectricTest {
 
         // 1. Verify Main Screen & Central Power Button exist
         composeTestRule.onNodeWithTag("main_power_toggle_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("zone_status_banner_panel").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("readout_latitude").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("readout_longitude").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("metric_accuracy").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("metric_altitude").performScrollTo().assertIsDisplayed()
 
-        // 2. Deliver a real Location fix from sensor and verify Copy, Share, Map, and Save buttons
+        // 2. Deliver a real Location fix from sensor and pin current GPS location
         val gpsFix = Location("gps").apply {
             latitude = 13.756331
             longitude = 100.501762
-            accuracy = 2.8f
+            accuracy = 2.5f
             altitude = 18.0
             speed = 4.5f
             bearing = 90f
@@ -67,49 +71,109 @@ class ExampleRobolectricTest {
         viewModel.onHardwareSensorFixReceived(gpsFix)
         composeTestRule.waitForIdle()
 
-        composeTestRule.onNodeWithTag("btn_copy_coordinates").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-
-        // Open Save Location Panel and save a location
+        // Pin Method 1: Save current GPS location from Home Screen
         composeTestRule.onNodeWithTag("btn_save_location").performScrollTo().performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("dialog_save_location").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("input_save_location_name").performScrollTo().performTextInput("จุดทดสอบระบบ")
+        composeTestRule.onNodeWithTag("input_save_location_name").performScrollTo().performTextInput("โซนสยาม")
         composeTestRule.onNodeWithTag("btn_confirm_save_location").performScrollTo().performClick()
         composeTestRule.waitForIdle()
 
         assertEquals(1, viewModel.uiState.value.savedLocations.size)
-        val savedId = viewModel.uiState.value.savedLocations.first().id
+        assertEquals(ZoneMonitorStatus.INSIDE_ZONE, viewModel.uiState.value.zoneStatus)
 
-        // 3. Navigate to Saved Locations Screen and test Copy & Delete buttons
+        // 3. Navigate to Pin & Zone Screen (หมุดและโซน) and test Radius Presets (1/5/10/20/30 km) & Paste Coordinates
         composeTestRule.onNodeWithTag("nav_tab_saved_locations").performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("saved_location_card_$savedId").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("btn_copy_saved_$savedId").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("btn_delete_saved_$savedId").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-        assertTrue(viewModel.uiState.value.savedLocations.isEmpty())
 
-        // 4. Navigate to Settings Screen and test Unit, Frequency, Coordinate Format, and Keep Screen On buttons
+        composeTestRule.onNodeWithTag("btn_radius_preset_1").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1.0f, viewModel.uiState.value.zoneRadiusKm, 0.01f)
+
+        composeTestRule.onNodeWithTag("btn_radius_preset_10").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(10.0f, viewModel.uiState.value.zoneRadiusKm, 0.01f)
+
+        // Set radius to 1.0 km for out-of-zone test
+        composeTestRule.onNodeWithTag("btn_radius_preset_1").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+
+        // Pin Method 3: Paste Coordinates to add a second pin and select between pins
+        composeTestRule.onNodeWithTag("btn_open_paste_coords").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("input_paste_coordinates").performScrollTo().performTextInput("13.756331, 100.501762")
+        composeTestRule.onNodeWithTag("input_paste_pin_name").performScrollTo().performTextInput("หมุดวางพิกัด")
+        composeTestRule.onNodeWithTag("btn_confirm_paste_new_pin").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals(2, viewModel.uiState.value.savedLocations.size)
+
+        // Delete the newly added pin so 1 active pin remains at (13.756331, 100.501762)
+        val firstPinId = viewModel.uiState.value.savedLocations.first().id
+        composeTestRule.onNodeWithTag("btn_delete_saved_$firstPinId").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, viewModel.uiState.value.savedLocations.size)
+
+        // 4. Test Out-of-Zone Alert & Mute Button on Home Screen, then Return-to-Zone
+        composeTestRule.onNodeWithTag("nav_tab_home").performClick()
+        composeTestRule.waitForIdle()
+
+        // Deliver a real GPS fix ~3.5 km away (outside the 1.0 km zone!)
+        val outsideFix = Location("gps").apply {
+            latitude = 13.795000
+            longitude = 100.501762
+            accuracy = 2.0f
+            time = System.currentTimeMillis() + 5000L
+        }
+        viewModel.onHardwareSensorFixReceived(outsideFix)
+        composeTestRule.waitForIdle()
+
+        assertEquals(ZoneMonitorStatus.OUTSIDE_ZONE, viewModel.uiState.value.zoneStatus)
+        assertTrue(viewModel.uiState.value.excessDistanceMeters > 100.0)
+
+        // Click Mute Alert button ("ปิดเสียงเตือน")
+        composeTestRule.onNodeWithTag("btn_mute_zone_alert").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertTrue(viewModel.uiState.value.isZoneAlertMuted)
+
+        // Deliver a real GPS fix back inside the 1.0 km zone ("กลับเข้าโซนแล้ว")
+        val returnFix = Location("gps").apply {
+            latitude = 13.756331
+            longitude = 100.501762
+            accuracy = 1.5f
+            time = System.currentTimeMillis() + 15000L
+        }
+        viewModel.onHardwareSensorFixReceived(returnFix)
+        composeTestRule.waitForIdle()
+        assertEquals(ZoneMonitorStatus.INSIDE_ZONE, viewModel.uiState.value.zoneStatus)
+        assertFalse(viewModel.uiState.value.isZoneAlertMuted)
+
+        // 5. Navigate to Settings Screen and test Vibration, Sound, Alert Tone, Volume, GPS Buffer, and Unit settings
         composeTestRule.onNodeWithTag("nav_tab_settings").performClick()
         composeTestRule.waitForIdle()
 
+        composeTestRule.onNodeWithTag("setting_tone_high_pulse").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(ZoneAlertTone.HIGH_PULSE, viewModel.uiState.value.alertTone)
+
+        composeTestRule.onNodeWithTag("btn_vol_50").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(50, viewModel.uiState.value.alertVolumePercent)
+
+        composeTestRule.onNodeWithTag("btn_buffer_50").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(50, viewModel.uiState.value.gpsBufferMeters)
+
         composeTestRule.onNodeWithTag("setting_unit_imperial").performScrollTo().performClick()
         composeTestRule.waitForIdle()
-        assertEquals(com.example.model.MeasurementUnit.IMPERIAL, viewModel.uiState.value.measurementUnit)
+        assertEquals(MeasurementUnit.IMPERIAL, viewModel.uiState.value.measurementUnit)
 
         composeTestRule.onNodeWithTag("setting_freq_high_precision").performScrollTo().performClick()
         composeTestRule.waitForIdle()
-        assertEquals(com.example.model.UpdateFrequency.HIGH_PRECISION, viewModel.uiState.value.updateFrequency)
+        assertEquals(UpdateFrequency.HIGH_PRECISION, viewModel.uiState.value.updateFrequency)
 
         composeTestRule.onNodeWithTag("setting_coord_dms").performScrollTo().performClick()
         composeTestRule.waitForIdle()
-        assertEquals(com.example.model.CoordinateFormat.DMS, viewModel.uiState.value.coordinateFormat)
-
-        val initialKeepOn = viewModel.uiState.value.keepScreenOn
-        composeTestRule.onNodeWithTag("setting_keep_screen_on_toggle").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-        assertFalse(viewModel.uiState.value.keepScreenOn == initialKeepOn)
+        assertEquals(CoordinateFormat.DMS, viewModel.uiState.value.coordinateFormat)
     }
 }

@@ -1,7 +1,5 @@
 package com.example.model
 
-import org.json.JSONArray
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -16,14 +14,38 @@ import kotlin.math.sqrt
 
 enum class AppScreen(val titleTh: String) {
     HOME("หน้าหลัก"),
-    SAVED_LOCATIONS("พิกัดที่บันทึก"),
+    SAVED_LOCATIONS("หมุดและโซน"),
     SETTINGS("การตั้งค่า")
 }
 
 enum class GpsLockState(val labelTh: String, val subLabelTh: String) {
     OFF("ปิดการทำงาน", "ระบบล็อกสัญญาณอยู่ในสถานะพัก"),
     SEARCHING("กำลังค้นหาสัญญาณ", "กำลังสแกนและเชื่อมต่อดาวเทียม GNSS"),
-    LOCKED("ล็อกสัญญาณแล้ว", "ตรึงสัญญาณพิกัดต่อเนื่องผ่านบริการเบื้องหลัง")
+    LOCKED("ล็อกสัญญาณแล้ว", "ตรึงสัญญาณพิกัดและตรวจโซนต่อเนื่อง")
+}
+
+enum class ZoneMonitorStatus(
+    val titleTh: String,
+    val detailTh: String
+) {
+    NO_ACTIVE_PIN("ยังไม่ได้เลือกหมุดโซน", "เลือกหรือปักหมุดเพื่อเริ่มตรวจรัศมีโซนรับงาน"),
+    WAITING_FOR_GPS("รอสัญญาณตำแหน่ง GPS", "กำลังค้นหาตำแหน่งจริงจากดาวเทียมเพื่อคำนวณระยะห่าง"),
+    INSIDE_ZONE("อยู่ในโซนรับงาน", "ตำแหน่งปัจจุบันอยู่ในเขตรัศมีที่กำหนด"),
+    OUTSIDE_ZONE("ออกนอกโซนรับงานแล้ว", "ตำแหน่งปัจจุบันออกนอกเขตรัศมีที่กำหนด")
+}
+
+enum class ZoneAlertTone(
+    val titleTh: String,
+    val subtitleTh: String
+) {
+    SIREN_DUAL("สัญญาณเตือนภัยสองจังหวะ", "คลื่นความถี่สลับสูง-ต่ำ คมชัดสำหรับแจ้งเตือนฉุกเฉิน"),
+    HIGH_PULSE("พัลส์ความถี่สูงคู่", "เสียงบี๊บคู่ความถี่สูง ตัดเสียงรบกวนรอบข้าง"),
+    SONAR_DEEP("คลื่นโซนาร์ทุ้มลึก", "สัญญาณคลื่นความถี่ต่ำนุ่มลึกชัดเจน")
+}
+
+enum class MapTapActionMode(val labelTh: String) {
+    MOVE_ACTIVE_PIN("แตะแผนที่เพื่อย้ายหมุดที่เลือก"),
+    CREATE_NEW_PIN("แตะแผนที่เพื่อปักหมุดใหม่")
 }
 
 enum class MeasurementUnit(
@@ -97,7 +119,7 @@ data class SavedLocationItem(
                 val ts = parts[6].toLongOrNull() ?: System.currentTimeMillis()
                 SavedLocationItem(
                     id = parts[0].ifBlank { "LOC-$ts" },
-                    name = parts[1].ifBlank { "ตำแหน่งที่บันทึก" },
+                    name = parts[1].ifBlank { "หมุดโซนรับงาน" },
                     latitude = lat,
                     longitude = lng,
                     accuracyMeters = acc,
@@ -173,6 +195,46 @@ object GeoMath {
             sin(dLon / 2).pow(2.0) * cos(rLat1) * cos(rLat2)
         val c = 2 * atan2(sqrt(a), sqrt(1 - a))
         return EARTH_RADIUS_KM * c
+    }
+
+    fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        return haversineKm(lat1, lon1, lat2, lon2) * 1000.0
+    }
+
+    /**
+     * Parses pasted or typed coordinate strings such as:
+     * - "13.756331, 100.501762"
+     * - "13.756331 100.501762"
+     * - "พิกัด: 13.756331, 100.501762"
+     */
+    fun parseCoordinateInput(rawInput: String): Pair<Double, Double>? {
+        val trimmed = rawInput.trim()
+        if (trimmed.isEmpty()) return null
+        val regex = Regex("""[-+]?\d+(?:\.\d+)?""")
+        val matches = regex.findAll(trimmed).mapNotNull { it.value.toDoubleOrNull() }.toList()
+        if (matches.size < 2) return null
+        val lat = matches[0]
+        val lng = matches[1]
+        if (lat !in -90.0..90.0 || lng !in -180.0..180.0) return null
+        return lat to lng
+    }
+
+    fun formatZoneDistanceTh(distanceMeters: Double?): String {
+        if (distanceMeters == null) return "—"
+        return if (distanceMeters >= 1000.0) {
+            String.format(Locale.US, "%.2f กม. (%.0f ม.)", distanceMeters / 1000.0, distanceMeters)
+        } else {
+            String.format(Locale.US, "%.0f เมตร (%.2f กม.)", distanceMeters, distanceMeters / 1000.0)
+        }
+    }
+
+    fun formatShortZoneDistanceTh(distanceMeters: Double?): String {
+        if (distanceMeters == null) return "—"
+        return if (distanceMeters >= 1000.0) {
+            String.format(Locale.US, "%.2f กม.", distanceMeters / 1000.0)
+        } else {
+            String.format(Locale.US, "%.0f ม.", distanceMeters)
+        }
     }
 
     fun cardinalDirectionTh(degrees: Float?): String {

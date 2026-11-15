@@ -6,6 +6,8 @@ import com.example.model.MeasurementUnit
 import com.example.model.SavedLocationItem
 import com.example.service.GpsKalmanFilter
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
@@ -28,6 +30,20 @@ class ExampleUnitTest {
 
         val imperialAlt = GeoMath.formatAltitude(100.0, MeasurementUnit.IMPERIAL)
         assertEquals("328.1 ฟุต", imperialAlt)
+    }
+
+    @Test
+    fun coordinateParsingAndDistanceMath_workCorrectly() {
+        val parsed = GeoMath.parseCoordinateInput("พิกัด: 13.756331, 100.501762")
+        assertNotNull(parsed)
+        assertEquals(13.756331, parsed!!.first, 1e-6)
+        assertEquals(100.501762, parsed.second, 1e-6)
+
+        assertNull(GeoMath.parseCoordinateInput("ไม่มีตัวเลข"))
+
+        // 0.01 deg latitude is approx 1.11 km (1111 meters)
+        val distMeters = GeoMath.haversineMeters(13.7500, 100.5000, 13.7600, 100.5000)
+        assertTrue(distMeters in 1100.0..1125.0)
     }
 
     @Test

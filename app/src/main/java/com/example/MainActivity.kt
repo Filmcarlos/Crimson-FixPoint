@@ -1,6 +1,7 @@
 package com.example
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -80,6 +81,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@SuppressLint("BatteryLife")
 @Composable
 fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -127,8 +129,14 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
 
     val backgroundLocationLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        viewModel.onBackgroundLocationResult(context, granted)
+    }
+
+    val batteryOptimizationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
     ) { _ ->
-        viewModel.refreshPermissionFlags(context)
+        viewModel.onBatteryExemptionResult(context)
     }
 
     val requestForegroundPermissions = { startLockOnGrant: Boolean ->
@@ -147,6 +155,25 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             backgroundLocationLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
         }
+    }
+
+    val requestBatteryOptimizationExemption = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            runCatching {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                }
+                batteryOptimizationLauncher.launch(intent)
+            }.onFailure {
+                runCatching {
+                    val fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(fallback)
+                }
+            }
+        }
+        Unit
     }
 
     val openSystemAppSettings = {
@@ -169,8 +196,7 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
 
     val shareCoordinatesIntent: (Double, Double) -> Unit = { lat, lng ->
         val rawPair = String.format(Locale.US, "%.6f, %.6f", lat, lng)
-        val mapsUrl = "https://www.google.com/maps/search/?api=1&query=$rawPair"
-        val shareBody = "พิกัดตำแหน่ง: $rawPair\nแผนที่: $mapsUrl"
+        val shareBody = "พิกัดตำแหน่ง: $rawPair"
         runCatching {
             val sendIntent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
@@ -182,27 +208,6 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
             }
             context.startActivity(chooser)
             localToastMessage = "เปิดหน้าต่างแชร์พิกัดแล้ว"
-        }
-    }
-
-    val openInGoogleMapsIntent: (Double, Double) -> Unit = { lat, lng ->
-        val rawPair = String.format(Locale.US, "%.6f,%.6f", lat, lng)
-        runCatching {
-            val geoUri = Uri.parse("geo:$rawPair?q=$rawPair")
-            val mapIntent = Intent(Intent.ACTION_VIEW, geoUri).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            if (mapIntent.resolveActivity(context.packageManager) != null) {
-                context.startActivity(mapIntent)
-            } else {
-                val webUri = Uri.parse("https://www.google.com/maps/search/?api=1&query=$rawPair")
-                context.startActivity(
-                    Intent(Intent.ACTION_VIEW, webUri).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                )
-            }
-            localToastMessage = "เปิดตำแหน่งในแผนที่แล้ว"
         }
     }
 
@@ -263,29 +268,48 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
                             },
                             onCopyCoordinates = copyCoordinatesToClipboard,
                             onShareCoordinates = shareCoordinatesIntent,
-                            onOpenInMaps = openInGoogleMapsIntent,
                             onSaveLocation = { name -> viewModel.saveCurrentLocation(name) },
+                            onMapTapPin = { lat, lng -> viewModel.onMapTapPin(lat, lng) },
+                            onMuteZoneAlert = { viewModel.muteZoneAlert(context) },
+                            onNavigateToZoneTab = { viewModel.selectScreen(AppScreen.SAVED_LOCATIONS) },
                             onRequestLocationPermission = { requestForegroundPermissions(true) },
                             onOpenAppSettings = openSystemAppSettings
                         )
 
                         AppScreen.SAVED_LOCATIONS -> HotzonePinsTab(
                             uiState = uiState,
-                            onSaveCurrentLocation = { name -> viewModel.saveCurrentLocation(name) },
+                            onSaveCurrentLocation = { name, moveActive ->
+                                viewModel.saveCurrentLocation(name, moveActive)
+                            },
+                            onMapTapPin = { lat, lng -> viewModel.onMapTapPin(lat, lng) },
+                            onSetMapTapMode = { mode -> viewModel.setMapTapActionMode(mode) },
+                            onPinOrMoveFromCoordinates = { rawCoords, customName, moveActive ->
+                                viewModel.pinOrMoveFromCoordinatesText(rawCoords, customName, moveActive)
+                            },
+                            onSelectActivePin = { id -> viewModel.selectActivePin(id) },
+                            onMoveSavedPin = { id, newLat, newLng, newName ->
+                                viewModel.moveSavedPin(id, newLat, newLng, newName)
+                            },
                             onDeleteLocation = { id -> viewModel.deleteSavedLocation(id) },
+                            onSetZoneRadiusKm = { radiusKm -> viewModel.setZoneRadiusKm(radiusKm) },
                             onCopyCoordinates = copyCoordinatesToClipboard,
-                            onShareCoordinates = shareCoordinatesIntent,
-                            onOpenInMaps = openInGoogleMapsIntent
+                            onShareCoordinates = shareCoordinatesIntent
                         )
 
                         AppScreen.SETTINGS -> SmartOrderFilterTab(
                             uiState = uiState,
+                            onToggleAlertVibration = { viewModel.setAlertVibrationEnabled(it) },
+                            onToggleAlertSound = { viewModel.setAlertSoundEnabled(it) },
+                            onSelectAlertTone = { viewModel.setAlertTone(it, playPreview = true) },
+                            onSetAlertVolumePercent = { viewModel.setAlertVolumePercent(it) },
+                            onSetGpsBufferMeters = { viewModel.setGpsBufferMeters(it) },
                             onSelectMeasurementUnit = { viewModel.setMeasurementUnit(it) },
                             onSelectCoordinateFormat = { viewModel.setCoordinateFormat(it) },
                             onSelectUpdateFrequency = { viewModel.setUpdateFrequency(context, it) },
                             onToggleKeepScreenOn = { viewModel.setKeepScreenOn(it) },
                             onRequestForegroundPermissions = { requestForegroundPermissions(false) },
                             onRequestBackgroundLocationPermission = requestBackgroundPermission,
+                            onRequestBatteryExemption = requestBatteryOptimizationExemption,
                             onOpenSystemSettings = openSystemAppSettings
                         )
                     }
