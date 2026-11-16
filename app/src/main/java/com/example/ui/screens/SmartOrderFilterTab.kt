@@ -47,11 +47,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.CoordinateFormat
 import com.example.model.MeasurementUnit
+import com.example.model.RainLeadTimeOption
 import com.example.model.UpdateFrequency
 import com.example.model.ZoneAlertTone
 import com.example.ui.components.ChamferedActionButton
 import com.example.ui.components.CrimsonPrecisionPanel
 import com.example.ui.components.PrecisionButtonShape
+import com.example.ui.components.RainAlertSettingsPanel
 import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CrimsonBorderGlow
 import com.example.ui.theme.CrimsonNeon
@@ -65,7 +67,7 @@ import com.example.viewmodel.FixPointUiState
 import kotlin.math.roundToInt
 
 /**
- * Screen 3: การตั้งค่า (Settings Screen: Out-of-Zone Alert & Buffer, Permissions & Battery Exemption, Units, Frequency, Keep Screen On)
+ * Screen 4: การตั้งค่า (Settings Screen: Out-of-Zone Alert & Buffer, Rain Alert Settings, Permissions & Battery Exemption, Units, Frequency, Keep Screen On)
  */
 @Composable
 fun SmartOrderFilterTab(
@@ -83,6 +85,9 @@ fun SmartOrderFilterTab(
     onRequestBackgroundLocationPermission: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
     onOpenSystemSettings: () -> Unit,
+    onToggleRainAlert: (Boolean) -> Unit = {},
+    onSelectRainLeadTime: (RainLeadTimeOption) -> Unit = {},
+    onSetRainProbabilityThreshold: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -459,7 +464,15 @@ fun SmartOrderFilterTab(
             )
         }
 
-        Spacer(modifier = Modifier.height(112.dp))
+        // 7. Rain Forecast Alert Settings (ตั้งค่าการแจ้งเตือนฝนใกล้ตก)
+        RainAlertSettingsPanel(
+            rainForecast = uiState.rainForecast,
+            onToggleRainAlert = onToggleRainAlert,
+            onSelectLeadTime = onSelectRainLeadTime,
+            onSetProbabilityThreshold = onSetRainProbabilityThreshold
+        )
+
+        Spacer(modifier = Modifier.height(160.dp))
     }
 }
 

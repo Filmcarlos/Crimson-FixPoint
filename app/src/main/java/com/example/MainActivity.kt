@@ -61,6 +61,7 @@ import com.example.ui.components.PrecisionTopBar
 import com.example.ui.screens.FixPointCoreTab
 import com.example.ui.screens.HotzonePinsTab
 import com.example.ui.screens.SmartOrderFilterTab
+import com.example.ui.screens.WorkAndCostTab
 import com.example.ui.theme.CrimsonNeon
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.ObsidianBlack
@@ -273,7 +274,8 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
                             onMuteZoneAlert = { viewModel.muteZoneAlert(context) },
                             onNavigateToZoneTab = { viewModel.selectScreen(AppScreen.SAVED_LOCATIONS) },
                             onRequestLocationPermission = { requestForegroundPermissions(true) },
-                            onOpenAppSettings = openSystemAppSettings
+                            onOpenAppSettings = openSystemAppSettings,
+                            onRefreshRainForecast = { viewModel.refreshRainForecast(force = true) }
                         )
 
                         AppScreen.SAVED_LOCATIONS -> HotzonePinsTab(
@@ -293,7 +295,54 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
                             onDeleteLocation = { id -> viewModel.deleteSavedLocation(id) },
                             onSetZoneRadiusKm = { radiusKm -> viewModel.setZoneRadiusKm(radiusKm) },
                             onCopyCoordinates = copyCoordinatesToClipboard,
-                            onShareCoordinates = shareCoordinatesIntent
+                            onShareCoordinates = shareCoordinatesIntent,
+                            onAddCustomPoi = { name, category, lat, lng ->
+                                viewModel.addCustomPoi(name, category, lat, lng)
+                            },
+                            onDeleteSavedPoi = { id -> viewModel.deleteSavedPoi(id) },
+                            onSetOverpassRadiusKm = { rKm -> viewModel.setOverpassSearchRadiusKm(rKm) },
+                            onSearchNearbyFuel = { force -> viewModel.searchNearbyFuelStations(force) },
+                            onSaveOverpassToMyPins = { poi -> viewModel.saveOverpassStationToMyPins(poi) }
+                        )
+
+                        AppScreen.WORK_AND_COST -> WorkAndCostTab(
+                            uiState = uiState,
+                            onAddDeliveryStop = { name, lat, lng ->
+                                viewModel.addDeliveryStop(name, lat, lng)
+                            },
+                            onAddDeliveryStopFromCoords = { rawCoords, name ->
+                                viewModel.addDeliveryStopFromCoordinatesText(rawCoords, name)
+                            },
+                            onEditDeliveryStop = { id, newName, newLat, newLng ->
+                                viewModel.editDeliveryStop(id, newName, newLat, newLng)
+                            },
+                            onToggleDeliveryStopDelivered = { id ->
+                                viewModel.toggleDeliveryStopDelivered(id)
+                            },
+                            onDeleteDeliveryStop = { id ->
+                                viewModel.deleteDeliveryStop(id)
+                            },
+                            onClearAllDeliveryStops = {
+                                viewModel.clearAllDeliveryStops()
+                            },
+                            onOptimizeDeliveryRoute = {
+                                viewModel.optimizeDeliveryRouteFromCurrentGps()
+                            },
+                            onUpdateFixedDailyCosts = { fuel ->
+                                viewModel.updateFixedDailyCosts(fuel)
+                            },
+                            onAddCustomExpense = { title, amt ->
+                                viewModel.addCustomExpense(title, amt)
+                            },
+                            onDeleteCustomExpense = { id ->
+                                viewModel.deleteCustomExpense(id)
+                            },
+                            onUpdateFuelSettings = { cap, cons, warn ->
+                                viewModel.updateFuelSettings(cap, cons, warn)
+                            },
+                            onMarkRefueledFullTank = {
+                                viewModel.markRefueledFullTank()
+                            }
                         )
 
                         AppScreen.SETTINGS -> SmartOrderFilterTab(
@@ -310,7 +359,10 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
                             onRequestForegroundPermissions = { requestForegroundPermissions(false) },
                             onRequestBackgroundLocationPermission = requestBackgroundPermission,
                             onRequestBatteryExemption = requestBatteryOptimizationExemption,
-                            onOpenSystemSettings = openSystemAppSettings
+                            onOpenSystemSettings = openSystemAppSettings,
+                            onToggleRainAlert = { viewModel.setRainAlertEnabled(it) },
+                            onSelectRainLeadTime = { viewModel.setRainLeadTimeOption(it) },
+                            onSetRainProbabilityThreshold = { viewModel.setRainProbabilityThreshold(it) }
                         )
                     }
                 }

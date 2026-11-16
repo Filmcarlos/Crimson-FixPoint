@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -246,10 +247,10 @@ fun PrecisionTopBar(
 
             Column {
                 Text(
-                    text = "CRIMSON FIXPOINT",
+                    text = "CRIMSON FIXPOINT v1.0.1",
                     style = MaterialTheme.typography.titleLarge.copy(
-                        fontSize = 16.5.sp,
-                        letterSpacing = 1.2.sp
+                        fontSize = 15.5.sp,
+                        letterSpacing = 1.0.sp
                     ),
                     color = TextHudPrimary
                 )
@@ -281,7 +282,7 @@ fun PrecisionTopBar(
 }
 
 /**
- * Custom Precision Bottom Navigation Bar with 3 Thai tabs: หน้าหลัก, พิกัดที่บันทึก, การตั้งค่า.
+ * Custom Precision Bottom Navigation Bar with 4 Thai tabs: หน้าหลัก, หมุดและโซน, งานและต้นทุน, การตั้งค่า.
  */
 @Composable
 fun PrecisionBottomBar(
@@ -296,14 +297,15 @@ fun PrecisionBottomBar(
             .background(Color(0xFF09080C))
             .border(1.dp, CrimsonBorderGlow)
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         AppScreen.entries.forEach { screen ->
             val selected = currentScreen == screen
             val icon = when (screen) {
                 AppScreen.HOME -> Icons.Default.GpsFixed
                 AppScreen.SAVED_LOCATIONS -> Icons.Default.Bookmarks
+                AppScreen.WORK_AND_COST -> Icons.Default.Route
                 AppScreen.SETTINGS -> Icons.Default.Settings
             }
             val labelText = if (screen == AppScreen.SAVED_LOCATIONS && savedCount > 0) {
@@ -334,22 +336,22 @@ fun PrecisionBottomBar(
                     .clickable { onSelectScreen(screen) }
                     .testTag("nav_tab_${screen.name.lowercase()}")
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                    modifier = Modifier.padding(horizontal = 6.dp)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier.padding(horizontal = 3.dp, vertical = 2.dp)
                 ) {
                     Icon(
                         imageVector = icon,
                         contentDescription = screen.titleTh,
                         tint = if (selected) CrimsonNeon else TextHudMuted,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = labelText,
                         style = MaterialTheme.typography.titleMedium.copy(
-                            fontSize = 12.5.sp,
+                            fontSize = 10.5.sp,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
                         ),
                         color = if (selected) TextHudPrimary else TextHudMuted,

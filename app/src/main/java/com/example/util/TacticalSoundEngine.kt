@@ -133,6 +133,80 @@ object TacticalSoundEngine {
         }
     }
 
+    /**
+     * Triggers vibration and warning chime when estimated fuel drops to the low-fuel threshold.
+     */
+    fun triggerLowFuelWarning(context: Context, vibrationEnabled: Boolean, soundEnabled: Boolean, volumePercent: Int) {
+        if (vibrationEnabled) {
+            runCatching {
+                val vibrator = getVibrator(context) ?: return@runCatching
+                if (vibrator.hasVibrator()) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        vibrator.vibrate(
+                            VibrationEffect.createWaveform(
+                                longArrayOf(0L, 220L, 100L, 220L),
+                                intArrayOf(0, 220, 0, 220),
+                                -1
+                            )
+                        )
+                    } else {
+                        @Suppress("DEPRECATION")
+                        vibrator.vibrate(longArrayOf(0L, 220L, 100L, 220L), -1)
+                    }
+                }
+            }
+        }
+        if (soundEnabled && volumePercent > 0) {
+            scope.launch {
+                playToneSequence(
+                    tones = listOf(
+                        ToneSegment(freqHz = 740.0, durationMs = 130, waveform = Waveform.SQUARE),
+                        ToneSegment(freqHz = 0.0, durationMs = 60, waveform = Waveform.SQUARE),
+                        ToneSegment(freqHz = 554.37, durationMs = 190, waveform = Waveform.SQUARE)
+                    ),
+                    volumeScale = (volumePercent / 100.0).coerceIn(0.0, 1.0)
+                )
+            }
+        }
+    }
+
+    /**
+     * Triggers vibration and alert tone when rain is approaching.
+     */
+    fun triggerRainApproachingWarning(context: Context, vibrationEnabled: Boolean, soundEnabled: Boolean, volumePercent: Int) {
+        if (vibrationEnabled) {
+            runCatching {
+                val vibrator = getVibrator(context) ?: return@runCatching
+                if (vibrator.hasVibrator()) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        vibrator.vibrate(
+                            VibrationEffect.createWaveform(
+                                longArrayOf(0L, 280L, 120L, 280L, 120L, 380L),
+                                intArrayOf(0, 200, 0, 220, 0, 255),
+                                -1
+                            )
+                        )
+                    } else {
+                        @Suppress("DEPRECATION")
+                        vibrator.vibrate(longArrayOf(0L, 280L, 120L, 280L, 120L, 380L), -1)
+                    }
+                }
+            }
+        }
+        if (soundEnabled && volumePercent > 0) {
+            scope.launch {
+                playToneSequence(
+                    tones = listOf(
+                        ToneSegment(freqHz = 659.25, durationMs = 120, waveform = Waveform.SINE),
+                        ToneSegment(freqHz = 880.0, durationMs = 120, waveform = Waveform.SINE),
+                        ToneSegment(freqHz = 1046.50, durationMs = 200, waveform = Waveform.SINE)
+                    ),
+                    volumeScale = (volumePercent / 100.0).coerceIn(0.0, 1.0)
+                )
+            }
+        }
+    }
+
     private fun getVibrator(context: Context): Vibrator? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager

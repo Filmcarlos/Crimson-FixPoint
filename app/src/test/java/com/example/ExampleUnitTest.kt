@@ -1,11 +1,20 @@
 package com.example
 
 import com.example.model.CoordinateFormat
+import com.example.model.CustomExpenseItem
+import com.example.model.DailyBreakEvenState
+import com.example.model.DeliveryStopItem
+import com.example.model.FuelEstimateState
 import com.example.model.GeoMath
+import com.example.model.JobIncomeEntry
 import com.example.model.MeasurementUnit
+import com.example.model.RouteOptimizer
 import com.example.model.SavedLocationItem
+import com.example.model.StopPoiCategory
+import com.example.model.StopPoiItem
 import com.example.service.GpsKalmanFilter
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -41,7 +50,6 @@ class ExampleUnitTest {
 
         assertNull(GeoMath.parseCoordinateInput("ไม่มีตัวเลข"))
 
-        // 0.01 deg latitude is approx 1.11 km (1111 meters)
         val distMeters = GeoMath.haversineMeters(13.7500, 100.5000, 13.7600, 100.5000)
         assertTrue(distMeters in 1100.0..1125.0)
     }
@@ -81,5 +89,60 @@ class ExampleUnitTest {
 
         assertTrue(abs(smoothedLat - anchorLat) < abs(spikeLat - anchorLat) * 0.25)
         assertTrue(abs(smoothedLng - anchorLng) < abs(spikeLng - anchorLng) * 0.25)
+    }
+
+    @Test
+    fun routeOptimizer_nearestNeighborAndTwoOpt_ordersShortestHaversineRoute() {
+        val startLat = 13.7500
+        val startLng = 100.5000
+        // Create stops out of order along a north-bound line
+        val stops = listOf(
+            DeliveryStopItem(id = "S3", name = "จุดที่ไกลสุด", latitude = 13.7900, longitude = 100.5000),
+            DeliveryStopItem(id = "S1", name = "จุดที่ใกล้สุด", latitude = 13.7550, longitude = 100.5000),
+            DeliveryStopItem(id = "S2", name = "จุดกลาง", latitude = 13.7700, longitude = 100.5000)
+        )
+
+        val result = RouteOptimizer.optimizeStops(startLat, startLng, stops)
+        assertEquals(3, result.orderedStops.size)
+        assertEquals("S1", result.orderedStops[0].id)
+        assertEquals(1, result.orderedStops[0].sequenceOrder)
+        assertEquals("S2", result.orderedStops[1].id)
+        assertEquals(2, result.orderedStops[1].sequenceOrder)
+        assertEquals("S3", result.orderedStops[2].id)
+        assertEquals(3, result.orderedStops[2].sequenceOrder)
+        assertTrue(result.totalPendingDistanceKm > 4.0 && result.totalPendingDistanceKm < 5.0)
+    }
+
+    @Test
+    fun dailyBreakEvenAndFuelEstimator_calculateCorrectly() {
+        val breakEven = DailyBreakEvenState(
+            fuelCostBaht = 100.0,
+            customExpenses = listOf(CustomExpenseItem("E1", "ค่าเน็ต", 50.0)),
+            jobIncomes = listOf(
+                JobIncomeEntry("J1", "งาน 1", 110.0, 1000L),
+                JobIncomeEntry("J2", "งาน 2", 80.0, 2000L)
+            )
+        )
+        assertEquals(150.0, breakEven.totalCostBaht, 0.01)
+        assertEquals(190.0, breakEven.totalIncomeBaht, 0.01)
+        assertTrue(breakEven.hasReachedBreakEven)
+        assertEquals(40.0, breakEven.netProfitBaht, 0.01)
+
+        val fuel = FuelEstimateState(
+            tankCapacityLiters = 5.0f,
+            consumptionKmPerLiter = 40.0f,
+            distanceDrivenSinceRefuelKm = 180.0,
+            lowFuelWarningLiters = 1.0f
+        )
+        assertEquals(4.5f, fuel.usedLiters, 0.05f)
+        assertEquals(0.5f, fuel.remainingLiters, 0.05f)
+        assertEquals(20.0f, fuel.estimatedRemainingRangeKm, 0.5f)
+        assertTrue(fuel.isLowFuel)
+
+        val poi = StopPoiItem("P1", "ปั๊ม ปตท.", StopPoiCategory.FUEL, 13.75, 100.50, true, 1000L)
+        val restoredPoi = StopPoiItem.deserializeList(StopPoiItem.serializeList(listOf(poi)))
+        assertEquals(1, restoredPoi.size)
+        assertEquals("ปั๊ม ปตท.", restoredPoi[0].name)
+        assertFalse(restoredPoi.isEmpty())
     }
 }

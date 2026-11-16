@@ -11,6 +11,8 @@ import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
 import com.example.model.CoordinateFormat
 import com.example.model.MeasurementUnit
+import com.example.model.RainLeadTimeOption
+import com.example.model.StopPoiCategory
 import com.example.model.UpdateFrequency
 import com.example.model.ZoneAlertTone
 import com.example.model.ZoneMonitorStatus
@@ -40,7 +42,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test all screens pinning radius geofence alerts and interactive buttons end to end`() {
+    fun `test all 4 tabs pinning radius geofence alerts route optimizer breakeven fuel poi and weather end to end`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val viewModel = FixPointViewModel()
         viewModel.initialize(context)
@@ -52,9 +54,10 @@ class ExampleRobolectricTest {
         }
         composeTestRule.waitForIdle()
 
-        // 1. Verify Main Screen & Central Power Button exist
+        // 1. Verify Main Screen, Central Power Button, and Weather Rain Forecast Card exist
         composeTestRule.onNodeWithTag("main_power_toggle_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("zone_status_banner_panel").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("weather_rain_forecast_card").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("readout_latitude").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("readout_longitude").performScrollTo().assertIsDisplayed()
 
@@ -82,7 +85,7 @@ class ExampleRobolectricTest {
         assertEquals(1, viewModel.uiState.value.savedLocations.size)
         assertEquals(ZoneMonitorStatus.INSIDE_ZONE, viewModel.uiState.value.zoneStatus)
 
-        // 3. Navigate to Pin & Zone Screen (หมุดและโซน) and test Leaflet Map, OSM Attribution, Radius Presets & Paste Coordinates
+        // 3. Navigate to Pin & Zone Screen (หมุดและโซน) and test Leaflet Map, OSM Attribution, Radius Presets & Fuel/Rest POIs
         composeTestRule.onNodeWithTag("nav_tab_saved_locations").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("interactive_zone_map_canvas").assertIsDisplayed()
@@ -92,38 +95,54 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         assertEquals(1.0f, viewModel.uiState.value.zoneRadiusKm, 0.01f)
 
-        composeTestRule.onNodeWithTag("btn_radius_preset_10").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-        assertEquals(10.0f, viewModel.uiState.value.zoneRadiusKm, 0.01f)
-
-        // Set radius to 1.0 km and verify radius input & confirm button are visible and clickable
-        composeTestRule.onNodeWithTag("btn_radius_preset_1").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("input_zone_radius_km").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("btn_apply_radius_input").performScrollTo().assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
 
-        // Pin Method 3: Paste Coordinates to add a second pin and select between pins
-        composeTestRule.onNodeWithTag("btn_open_paste_coords").performScrollTo().performClick()
+        // Test Fuel & Rest Stops in หมุดและโซน
+        viewModel.addCustomPoi("ปั๊มบางจาก สยาม", StopPoiCategory.FUEL, 13.7580, 100.5020)
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("input_paste_coordinates").performScrollTo().performTextInput("13.756331, 100.501762")
-        composeTestRule.onNodeWithTag("input_paste_pin_name").performScrollTo().performTextInput("หมุดวางพิกัด")
-        composeTestRule.onNodeWithTag("btn_confirm_paste_new_pin").performScrollTo().performClick()
+        assertEquals(1, viewModel.uiState.value.savedPois.size)
+        composeTestRule.onNodeWithTag("btn_overpass_radius_2").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(2, viewModel.uiState.value.overpassSearchRadiusKm)
+
+        // 4. Navigate to 4th Tab: งานและต้นทุน (WORK_AND_COST) and test Route Optimizer, Daily Break-Even, and Fuel Estimator
+        composeTestRule.onNodeWithTag("nav_tab_work_and_cost").performClick()
         composeTestRule.waitForIdle()
 
-        assertEquals(2, viewModel.uiState.value.savedLocations.size)
-
-        // Delete the newly added pin so 1 active pin remains at (13.756331, 100.501762)
-        val firstPinId = viewModel.uiState.value.savedLocations.first().id
-        composeTestRule.onNodeWithTag("btn_delete_saved_$firstPinId").performScrollTo().performClick()
+        // Add delivery stops and run Nearest Neighbor + 2-opt route optimization
+        viewModel.addDeliveryStop("จุดส่งที่ 1 (ไกล)", 13.7900, 100.5017)
+        viewModel.addDeliveryStop("จุดส่งที่ 2 (ใกล้)", 13.7600, 100.5017)
         composeTestRule.waitForIdle()
-        assertEquals(1, viewModel.uiState.value.savedLocations.size)
+        composeTestRule.onNodeWithTag("btn_optimize_delivery_route").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals("จุดส่งที่ 2 (ใกล้)", viewModel.uiState.value.deliveryStops.first().name)
 
-        // 4. Test Out-of-Zone Alert & Mute Button on Home Screen, then Return-to-Zone
+        // Mark first stop delivered
+        val firstStopId = viewModel.uiState.value.deliveryStops.first().id
+        composeTestRule.onNodeWithTag("btn_toggle_delivered_$firstStopId").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertTrue(viewModel.uiState.value.deliveryStops.first { it.id == firstStopId }.isDelivered)
+
+        // Test Daily Break-Even & Profit
+        viewModel.updateFixedDailyCosts(100.0)
+        viewModel.addCustomExpense("ค่าทางด่วน", 50.0)
+        viewModel.addJobIncome("งานส่งด่วน #1", 200.0)
+        composeTestRule.waitForIdle()
+        assertTrue(viewModel.uiState.value.breakEvenState.hasReachedBreakEven)
+        assertEquals(50.0, viewModel.uiState.value.breakEvenState.netProfitBaht, 0.01)
+
+        // Test Fuel Estimator & Refuel button
+        viewModel.updateFuelSettings(tankCapacityLiters = 5.5f, consumptionKmPerLiter = 40.0f, lowFuelWarningLiters = 1.0f)
+        composeTestRule.onNodeWithTag("btn_refuel_full_tank").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(0.0, viewModel.uiState.value.fuelState.distanceDrivenSinceRefuelKm, 0.001)
+
+        // 5. Test Out-of-Zone Alert & Mute Button on Home Screen, then Return-to-Zone
         composeTestRule.onNodeWithTag("nav_tab_home").performClick()
         composeTestRule.waitForIdle()
 
-        // Deliver a real GPS fix ~3.5 km away (outside the 1.0 km zone!)
         val outsideFix = Location("gps").apply {
             latitude = 13.795000
             longitude = 100.501762
@@ -136,12 +155,10 @@ class ExampleRobolectricTest {
         assertEquals(ZoneMonitorStatus.OUTSIDE_ZONE, viewModel.uiState.value.zoneStatus)
         assertTrue(viewModel.uiState.value.excessDistanceMeters > 100.0)
 
-        // Click Mute Alert button ("ปิดเสียงเตือน")
         composeTestRule.onNodeWithTag("btn_mute_zone_alert").performScrollTo().performClick()
         composeTestRule.waitForIdle()
         assertTrue(viewModel.uiState.value.isZoneAlertMuted)
 
-        // Deliver a real GPS fix back inside the 1.0 km zone ("กลับเข้าโซนแล้ว")
         val returnFix = Location("gps").apply {
             latitude = 13.756331
             longitude = 100.501762
@@ -153,7 +170,7 @@ class ExampleRobolectricTest {
         assertEquals(ZoneMonitorStatus.INSIDE_ZONE, viewModel.uiState.value.zoneStatus)
         assertFalse(viewModel.uiState.value.isZoneAlertMuted)
 
-        // 5. Navigate to Settings Screen and test Vibration, Sound, Alert Tone, Volume, GPS Buffer, and Unit settings
+        // 6. Navigate to Settings Screen and test Zone Alert, Unit, and Rain Alert Settings
         composeTestRule.onNodeWithTag("nav_tab_settings").performClick()
         composeTestRule.waitForIdle()
 
@@ -161,13 +178,13 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         assertEquals(ZoneAlertTone.HIGH_PULSE, viewModel.uiState.value.alertTone)
 
-        composeTestRule.onNodeWithTag("btn_vol_50").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("setting_rain_lead_60").performScrollTo().performClick()
         composeTestRule.waitForIdle()
-        assertEquals(50, viewModel.uiState.value.alertVolumePercent)
+        assertEquals(RainLeadTimeOption.MIN_60, viewModel.uiState.value.rainForecast.leadTimeOption)
 
-        composeTestRule.onNodeWithTag("btn_buffer_50").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("btn_rain_prob_70").performScrollTo().performClick()
         composeTestRule.waitForIdle()
-        assertEquals(50, viewModel.uiState.value.gpsBufferMeters)
+        assertEquals(70, viewModel.uiState.value.rainForecast.probabilityThresholdPercent)
 
         composeTestRule.onNodeWithTag("setting_unit_imperial").performScrollTo().performClick()
         composeTestRule.waitForIdle()

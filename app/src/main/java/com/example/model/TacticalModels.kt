@@ -15,6 +15,7 @@ import kotlin.math.sqrt
 enum class AppScreen(val titleTh: String) {
     HOME("หน้าหลัก"),
     SAVED_LOCATIONS("หมุดและโซน"),
+    WORK_AND_COST("งานและต้นทุน"),
     SETTINGS("การตั้งค่า")
 }
 
@@ -235,6 +236,33 @@ object GeoMath {
         } else {
             String.format(Locale.US, "%.0f ม.", distanceMeters)
         }
+    }
+
+    fun bearingDegrees(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
+        val phi1 = Math.toRadians(lat1)
+        val phi2 = Math.toRadians(lat2)
+        val dLambda = Math.toRadians(lon2 - lon1)
+        val y = sin(dLambda) * cos(phi2)
+        val x = cos(phi1) * sin(phi2) - sin(phi1) * cos(phi2) * cos(dLambda)
+        val theta = Math.toDegrees(atan2(y, x))
+        return (((theta + 360.0) % 360.0)).toFloat()
+    }
+
+    fun shortCardinalDirectionTh(degrees: Float?): String {
+        if (degrees == null) return "—"
+        val normalized = ((degrees % 360f) + 360f) % 360f
+        val dirs = listOf(
+            "เหนือ",
+            "ตะวันออกเฉียงเหนือ",
+            "ตะวันออก",
+            "ตะวันออกเฉียงใต้",
+            "ใต้",
+            "ตะวันตกเฉียงใต้",
+            "ตะวันตก",
+            "ตะวันตกเฉียงเหนือ"
+        )
+        val index = (((normalized + 22.5f) % 360f) / 45f).toInt().coerceIn(0, 7)
+        return "${dirs[index]} (${normalized.roundToInt()}°)"
     }
 
     fun cardinalDirectionTh(degrees: Float?): String {

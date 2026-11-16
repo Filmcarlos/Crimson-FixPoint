@@ -62,8 +62,11 @@ import androidx.compose.ui.unit.sp
 import com.example.model.GeoMath
 import com.example.model.MapTapActionMode
 import com.example.model.SavedLocationItem
+import com.example.model.StopPoiCategory
+import com.example.model.StopPoiItem
 import com.example.ui.components.ChamferedActionButton
 import com.example.ui.components.CrimsonPrecisionPanel
+import com.example.ui.components.FuelAndRestStopsPanel
 import com.example.ui.components.InteractiveZoneMapCanvas
 import com.example.ui.components.PrecisionButtonShape
 import com.example.ui.theme.CrimsonBorderGlow
@@ -91,6 +94,11 @@ fun HotzonePinsTab(
     onSetZoneRadiusKm: (Float) -> Unit,
     onCopyCoordinates: (Double, Double) -> Unit,
     onShareCoordinates: (Double, Double) -> Unit,
+    onAddCustomPoi: (String, StopPoiCategory, Double, Double) -> Boolean = { _, _, _, _ -> false },
+    onDeleteSavedPoi: (String) -> Unit = {},
+    onSetOverpassRadiusKm: (Int) -> Unit = {},
+    onSearchNearbyFuel: (Boolean) -> Unit = {},
+    onSaveOverpassToMyPins: (StopPoiItem) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -175,7 +183,8 @@ fun HotzonePinsTab(
                 zoneStatus = uiState.zoneStatus,
                 distanceFromPinMeters = uiState.currentDistanceFromPinMeters,
                 onMapTapPin = onMapTapPin,
-                mapHeightDp = 265
+                mapHeightDp = 265,
+                poiPins = uiState.savedPois + uiState.nearbyOverpassFuelPois
             )
         }
 
@@ -663,8 +672,18 @@ fun HotzonePinsTab(
             }
         }
 
+        // 5. Fuel Stations & Rest Stops (User Saved + Overpass API Nearby Search)
+        FuelAndRestStopsPanel(
+            uiState = uiState,
+            onAddCustomPoi = onAddCustomPoi,
+            onDeleteSavedPoi = onDeleteSavedPoi,
+            onSetOverpassRadiusKm = onSetOverpassRadiusKm,
+            onSearchNearbyFuel = onSearchNearbyFuel,
+            onSaveOverpassToMyPins = onSaveOverpassToMyPins
+        )
+
         // Generous bottom spacing so all inputs & buttons scroll well past the bottom bar
-        Spacer(modifier = Modifier.height(112.dp))
+        Spacer(modifier = Modifier.height(160.dp))
     }
 }
 

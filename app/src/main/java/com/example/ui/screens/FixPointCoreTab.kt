@@ -68,6 +68,7 @@ import com.example.ui.components.ChamferedActionButton
 import com.example.ui.components.CrimsonPrecisionPanel
 import com.example.ui.components.InteractiveZoneMapCanvas
 import com.example.ui.components.PrecisionButtonShape
+import com.example.ui.components.RainForecastHomeCard
 import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CrimsonBorderGlow
 import com.example.ui.theme.CrimsonNeon
@@ -92,6 +93,7 @@ fun FixPointCoreTab(
     onNavigateToZoneTab: () -> Unit,
     onRequestLocationPermission: () -> Unit,
     onOpenAppSettings: () -> Unit,
+    onRefreshRainForecast: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val telemetry = uiState.telemetry
@@ -226,6 +228,12 @@ fun FixPointCoreTab(
             uiState = uiState,
             onMuteZoneAlert = onMuteZoneAlert,
             onNavigateToZoneTab = onNavigateToZoneTab
+        )
+
+        // 1b. Rain Forecast Card (Open-Meteo: "ไม่มีฝน" or "ฝนจะตกในอีก X นาที โอกาส Y%" or "ดึงพยากรณ์ไม่ได้")
+        RainForecastHomeCard(
+            rainForecast = uiState.rainForecast,
+            onRefreshForecast = onRefreshRainForecast
         )
 
         // 2. Centerpiece Main Power Toggle Button (ปุ่มเปิด/ปิดขนาดใหญ่ตรงกลางหน้าหลัก)
@@ -489,7 +497,7 @@ fun FixPointCoreTab(
             }
         }
 
-        Spacer(modifier = Modifier.height(112.dp))
+        Spacer(modifier = Modifier.height(160.dp))
     }
 }
 
