@@ -99,14 +99,6 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("btn_apply_radius_input").performScrollTo().assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
 
-        // Test Fuel & Rest Stops in หมุดและโซน
-        viewModel.addCustomPoi("ปั๊มบางจาก สยาม", StopPoiCategory.FUEL, 13.7580, 100.5020)
-        composeTestRule.waitForIdle()
-        assertEquals(1, viewModel.uiState.value.savedPois.size)
-        composeTestRule.onNodeWithTag("btn_overpass_radius_2").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-        assertEquals(2, viewModel.uiState.value.overpassSearchRadiusKm)
-
         // 4. Navigate to 4th Tab: งานและต้นทุน (WORK_AND_COST) and test Route Optimizer, Daily Break-Even, and Fuel Estimator
         composeTestRule.onNodeWithTag("nav_tab_work_and_cost").performClick()
         composeTestRule.waitForIdle()

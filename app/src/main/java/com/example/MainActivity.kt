@@ -295,14 +295,7 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
                             onDeleteLocation = { id -> viewModel.deleteSavedLocation(id) },
                             onSetZoneRadiusKm = { radiusKm -> viewModel.setZoneRadiusKm(radiusKm) },
                             onCopyCoordinates = copyCoordinatesToClipboard,
-                            onShareCoordinates = shareCoordinatesIntent,
-                            onAddCustomPoi = { name, category, lat, lng ->
-                                viewModel.addCustomPoi(name, category, lat, lng)
-                            },
-                            onDeleteSavedPoi = { id -> viewModel.deleteSavedPoi(id) },
-                            onSetOverpassRadiusKm = { rKm -> viewModel.setOverpassSearchRadiusKm(rKm) },
-                            onSearchNearbyFuel = { force -> viewModel.searchNearbyFuelStations(force) },
-                            onSaveOverpassToMyPins = { poi -> viewModel.saveOverpassStationToMyPins(poi) }
+                            onShareCoordinates = shareCoordinatesIntent
                         )
 
                         AppScreen.WORK_AND_COST -> WorkAndCostTab(
