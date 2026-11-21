@@ -27,6 +27,56 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Remove Stale Legacy v1 Kotlin Files (Retained by Sync)
+        shell: bash
+        run: |
+          cat << 'EOF' > /tmp/v2_valid_kotlin_files.txt
+          app/src/androidTest/java/com/example/ExampleInstrumentedTest.kt
+          app/src/main/java/com/example/MainActivity.kt
+          app/src/main/java/com/example/ai/MlKitOrderOcrEngine.kt
+          app/src/main/java/com/example/ai/OrderOcrParser.kt
+          app/src/main/java/com/example/ai/RiderIntelligenceEngine.kt
+          app/src/main/java/com/example/data/local/FixPointDaos.kt
+          app/src/main/java/com/example/data/local/FixPointDatabase.kt
+          app/src/main/java/com/example/data/local/FixPointEntities.kt
+          app/src/main/java/com/example/data/local/RiderPreferencesDataStore.kt
+          app/src/main/java/com/example/data/repository/FixPointRepository.kt
+          app/src/main/java/com/example/model/RiderAiModels.kt
+          app/src/main/java/com/example/model/SmartEarningsModels.kt
+          app/src/main/java/com/example/model/TacticalModels.kt
+          app/src/main/java/com/example/model/WorkCostModels.kt
+          app/src/main/java/com/example/service/GpsKeepAliveService.kt
+          app/src/main/java/com/example/service/LocationService.kt
+          app/src/main/java/com/example/service/ScreenReaderCaptureService.kt
+          app/src/main/java/com/example/ui/components/InteractiveZoneMapCanvas.kt
+          app/src/main/java/com/example/ui/components/PremiumDesignSystem.kt
+          app/src/main/java/com/example/ui/screens/AiAssistantScreen.kt
+          app/src/main/java/com/example/ui/screens/DashboardScreen.kt
+          app/src/main/java/com/example/ui/screens/EarningsAnalyticsScreen.kt
+          app/src/main/java/com/example/ui/screens/ProfileSettingsScreen.kt
+          app/src/main/java/com/example/ui/screens/SmartMapScreen.kt
+          app/src/main/java/com/example/ui/theme/Color.kt
+          app/src/main/java/com/example/ui/theme/Theme.kt
+          app/src/main/java/com/example/ui/theme/Type.kt
+          app/src/main/java/com/example/util/NetworkClients.kt
+          app/src/main/java/com/example/util/TacticalSoundEngine.kt
+          app/src/main/java/com/example/viewmodel/FixPointViewModel.kt
+          app/src/main/java/com/example/worker/DailyMaintenanceWorker.kt
+          app/src/test/java/com/example/ExampleRobolectricTest.kt
+          app/src/test/java/com/example/ExampleUnitTest.kt
+          app/src/test/java/com/example/FixPointDatabaseMigrationTest.kt
+          app/src/test/java/com/example/RiderAiAndOcrUnitTest.kt
+          app/src/test/java/com/example/SmartEarningsAndRouteTest.kt
+          EOF
+          sed -i 's/^[[:space:]]*//' /tmp/v2_valid_kotlin_files.txt
+          while IFS= read -r kt_file; do
+            if ! grep -Fxq "$kt_file" /tmp/v2_valid_kotlin_files.txt; then
+              echo "Removing stale legacy file: $kt_file"
+              rm -f "$kt_file"
+            fi
+          done < <(find app/src -name '*.kt' | sort)
+          rm -f /tmp/v2_valid_kotlin_files.txt
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
