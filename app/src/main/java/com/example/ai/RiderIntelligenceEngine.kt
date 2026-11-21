@@ -116,7 +116,7 @@ object RiderIntelligenceEngine {
                     targetPerKm
                 )
             )
-            if (earningsPerHour != null && estMins != null) {
+            if (earningsPerHour != null) {
                 add(
                     String.format(
                         Locale.US,

@@ -30,7 +30,7 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RestartAlt
-import androidx.compose.material.icons.filled.ScreenShare
+import androidx.compose.material.icons.automirrored.filled.ScreenShare
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.WarningAmber
@@ -249,7 +249,7 @@ fun AiAssistantScreen(
                         StatusPillBadge(
                             text = if (isSrActive) "ACTIVE" else "LOCAL OCR",
                             accentColor = if (isSrActive) EmeraldSRank else CrimsonNeon,
-                            icon = Icons.Default.ScreenShare
+                            icon = Icons.AutoMirrored.Filled.ScreenShare
                         )
                     }
 

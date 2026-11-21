@@ -35,7 +35,7 @@ import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.TrendingUp
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -197,7 +197,7 @@ fun DashboardScreen(
                         StatusPillBadge(
                             text = "${todaySummary.jobCount} ออเดอร์",
                             accentColor = if (todaySummary.isGoalReached) EmeraldSRank else CrimsonNeon,
-                            icon = if (todaySummary.isGoalReached) Icons.Default.CheckCircle else Icons.Default.TrendingUp
+                            icon = if (todaySummary.isGoalReached) Icons.Default.CheckCircle else Icons.AutoMirrored.Filled.TrendingUp
                         )
                     }
 

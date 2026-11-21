@@ -63,15 +63,19 @@ jobs:
         run: |
           # 1. Ensure debug.keystore exists for debugConfig in app/build.gradle.kts
           if [ ! -f "debug.keystore" ]; then
-            keytool -genkeypair -v \
-              -keystore debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+            if [ -f "debug.keystore.base64" ]; then
+              base64 --decode debug.keystore.base64 > debug.keystore
+            else
+              keytool -genkeypair -v \
+                -keystore debug.keystore \
+                -storepass android \
+                -alias androiddebugkey \
+                -keypass android \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
           fi
 
           # 2. Ensure release keystore (my-upload-key.jks) exists for release signingConfig in app/build.gradle.kts
@@ -94,13 +98,17 @@ jobs:
             cp .env.example .env
           fi
 
+      - name: Run Unit, Migration & Robolectric Tests
+        run: |
+          gradle :app:testDebugUnitTest --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g -Djava.awt.headless=true"
+
       - name: Build Signed Debug & Release APKs with Gradle
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD || 'crimsonfixpoint2026' }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || 'crimsonfixpoint2026' }}
         run: |
-          gradle :app:assembleDebug :app:assembleRelease --no-daemon -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
+          gradle :app:assembleDebug :app:assembleRelease --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g -Djava.awt.headless=true"
 
       - name: Prepare Named APK Artifacts & Determine Release Tag
         run: |
@@ -112,7 +120,7 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             RELEASE_TAG="${GITHUB_REF#refs/tags/}"
           else
-            RELEASE_TAG="v1.0.${GITHUB_RUN_NUMBER}"
+            RELEASE_TAG="v2.0.${GITHUB_RUN_NUMBER}"
           fi
           echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_ENV
 
@@ -137,7 +145,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: "Crimson FixPoint ${{ env.RELEASE_TAG }} (Tactical GPS & Short-Loop APK)"
+          name: "Crimson FixPoint ${{ env.RELEASE_TAG }} (AI Rider Assistant & Smart Earnings 2.0)"
           body: |
             ## 🎯 Crimson FixPoint ${{ env.RELEASE_TAG }} — Android APK Release
             ดาวน์โหลดไฟล์ติดตั้งสำหรับมือถือ Android ได้โดยตรงจากไฟล์แนบด้านล่าง:

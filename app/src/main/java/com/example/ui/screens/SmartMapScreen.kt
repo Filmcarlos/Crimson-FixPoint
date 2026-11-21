@@ -26,7 +26,7 @@ import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.LocalGasStation
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Place
@@ -355,7 +355,7 @@ fun SmartMapScreen(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             modifier = Modifier.weight(1f)
                         ) {
-                            Icon(Icons.Default.List, contentDescription = null, tint = CrimsonNeon)
+                            Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, tint = CrimsonNeon)
                             Column {
                                 Text(
                                     text = uiState.activePin?.let { "โซนหลัก: ${it.name}" }
