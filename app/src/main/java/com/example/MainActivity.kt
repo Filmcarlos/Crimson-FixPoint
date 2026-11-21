@@ -7,6 +7,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -17,23 +18,25 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -55,28 +58,56 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.model.AppScreen
 import com.example.model.GeoMath
-import com.example.ui.components.PrecisionBottomBar
-import com.example.ui.components.PrecisionButtonShape
-import com.example.ui.components.PrecisionTopBar
-import com.example.ui.screens.FixPointCoreTab
-import com.example.ui.screens.HotzonePinsTab
-import com.example.ui.screens.SmartOrderFilterTab
-import com.example.ui.screens.WorkAndCostTab
+import com.example.model.OrderInputSource
+import com.example.ui.components.CrimsonBottomNavBar
+import com.example.ui.components.CrimsonNavRail
+import com.example.ui.components.CrimsonTopHeader
+import com.example.ui.screens.AiAssistantScreen
+import com.example.ui.screens.DashboardScreen
+import com.example.ui.screens.EarningsAnalyticsScreen
+import com.example.ui.screens.ProfileSettingsScreen
+import com.example.ui.screens.SmartMapScreen
 import com.example.ui.theme.CrimsonNeon
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.ObsidianBlack
 import com.example.ui.theme.TextHudPrimary
 import com.example.viewmodel.FixPointViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
+
+    private val incomingSharedImageUri = MutableStateFlow<Uri?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        extractSharedImageIntent(intent)
         setContent {
             MyApplicationTheme {
-                CrimsonFixPointApp()
+                CrimsonFixPointApp(sharedImageFlow = incomingSharedImageUri)
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        extractSharedImageIntent(intent)
+    }
+
+    private fun extractSharedImageIntent(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_SEND && intent.type?.startsWith("image/") == true) {
+            val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(Intent.EXTRA_STREAM)
+            }
+            if (uri != null) {
+                incomingSharedImageUri.value = uri
             }
         }
     }
@@ -84,7 +115,10 @@ class MainActivity : ComponentActivity() {
 
 @SuppressLint("BatteryLife")
 @Composable
-fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
+fun CrimsonFixPointApp(
+    viewModel: FixPointViewModel = viewModel(),
+    sharedImageFlow: MutableStateFlow<Uri?>? = null
+) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var pendingStartLockAfterPermission by remember { mutableStateOf(false) }
@@ -94,7 +128,17 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
         viewModel.initialize(context)
     }
 
-    // Apply Keep Screen On window flag dynamically based on user setting
+    // Handle images shared directly to Crimson FixPoint via ACTION_SEND
+    if (sharedImageFlow != null) {
+        val sharedUri by sharedImageFlow.collectAsStateWithLifecycle()
+        LaunchedEffect(sharedUri) {
+            val uri = sharedUri ?: return@LaunchedEffect
+            viewModel.processOrderImageUri(context, uri, OrderInputSource.SHARED_IMAGE)
+            sharedImageFlow.value = null
+        }
+    }
+
+    // Keep screen on dynamically
     DisposableEffect(uiState.keepScreenOn) {
         val activity = context as? Activity
         if (uiState.keepScreenOn) {
@@ -105,11 +149,10 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
         onDispose {}
     }
 
-    // Auto-clear transient status banner after 2.8 seconds
     val activeBanner = localToastMessage ?: uiState.statusBannerMessageTh
     LaunchedEffect(activeBanner) {
         if (activeBanner != null) {
-            delay(2800L)
+            delay(3000L)
             localToastMessage = null
             viewModel.clearStatusBanner()
         }
@@ -120,11 +163,7 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
     ) { permissions ->
         val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        viewModel.onPermissionResult(
-            context = context,
-            granted = granted,
-            startLockIfGranted = pendingStartLockAfterPermission
-        )
+        viewModel.onPermissionResult(context, granted, pendingStartLockAfterPermission)
         pendingStartLockAfterPermission = false
     }
 
@@ -138,6 +177,49 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
         contract = ActivityResultContracts.StartActivityForResult()
     ) { _ ->
         viewModel.onBatteryExemptionResult(context)
+    }
+
+    // User-Controlled MediaProjection Permission Launcher
+    val mediaProjectionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        viewModel.onMediaProjectionPermissionResult(context, result.resultCode, result.data)
+    }
+
+    // Zero-Permission Android Photo Picker for Screenshot OCR Import
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.processOrderImageUri(context, uri, OrderInputSource.SCREENSHOT_IMPORT)
+        }
+    }
+
+    // Offline JSON Local Backup & Restore via Storage Access Framework
+    val exportBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) viewModel.exportBackupToUri(context, uri)
+    }
+
+    val importBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) viewModel.importBackupFromUri(context, uri)
+    }
+
+    val launchMediaProjectionConsentIntent = {
+        val mgr = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
+        if (mgr != null) {
+            runCatching {
+                mediaProjectionLauncher.launch(mgr.createScreenCaptureIntent())
+            }.onFailure {
+                localToastMessage = "อุปกรณ์ไม่รองรับการขอสิทธิ์ MediaProjection"
+            }
+        } else {
+            localToastMessage = "ไม่พบบริการ MediaProjection ในอุปกรณ์นี้"
+        }
+        Unit
     }
 
     val requestForegroundPermissions = { startLockOnGrant: Boolean ->
@@ -158,7 +240,7 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
         }
     }
 
-    val requestBatteryOptimizationExemption = {
+    val requestBatteryExemption = {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             runCatching {
                 val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
@@ -177,7 +259,7 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
         Unit
     }
 
-    val openSystemAppSettings = {
+    val openSystemSettings = {
         runCatching {
             val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                 data = Uri.fromParts("package", context.packageName, null)
@@ -188,197 +270,218 @@ fun CrimsonFixPointApp(viewModel: FixPointViewModel = viewModel()) {
         Unit
     }
 
-    val copyCoordinatesToClipboard: (Double, Double) -> Unit = { lat, lng ->
+    val copyCoordinates: (Double, Double) -> Unit = { lat, lng ->
         val formatted = GeoMath.formatCoordinatePair(lat, lng, uiState.coordinateFormat)
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         clipboard?.setPrimaryClip(ClipData.newPlainText("พิกัด GPS", formatted))
         localToastMessage = "คัดลอกพิกัด $formatted แล้ว"
     }
 
-    val shareCoordinatesIntent: (Double, Double) -> Unit = { lat, lng ->
+    val shareCoordinates: (Double, Double) -> Unit = { lat, lng ->
         val rawPair = String.format(Locale.US, "%.6f, %.6f", lat, lng)
-        val shareBody = "พิกัดตำแหน่ง: $rawPair"
         runCatching {
             val sendIntent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
-                putExtra(Intent.EXTRA_SUBJECT, "พิกัดตำแหน่งจาก Crimson FixPoint")
-                putExtra(Intent.EXTRA_TEXT, shareBody)
+                putExtra(Intent.EXTRA_SUBJECT, "พิกัดจาก Crimson FixPoint")
+                putExtra(Intent.EXTRA_TEXT, "พิกัดตำแหน่ง: $rawPair")
             }
             val chooser = Intent.createChooser(sendIntent, "แชร์พิกัดตำแหน่ง").apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(chooser)
-            localToastMessage = "เปิดหน้าต่างแชร์พิกัดแล้ว"
         }
     }
 
-    BackHandler(enabled = uiState.currentScreen != AppScreen.HOME) {
-        viewModel.selectScreen(AppScreen.HOME)
+    BackHandler(enabled = uiState.currentScreen != AppScreen.DASHBOARD) {
+        viewModel.selectScreen(AppScreen.DASHBOARD)
     }
 
-    Scaffold(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(ObsidianBlack),
-        containerColor = ObsidianBlack,
-        contentWindowInsets = WindowInsets.safeDrawing,
-        bottomBar = {
-            PrecisionBottomBar(
-                currentScreen = uiState.currentScreen,
-                savedCount = uiState.savedLocations.size,
-                onSelectScreen = { viewModel.selectScreen(it) }
-            )
-        }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                PrecisionTopBar(
-                    lockState = uiState.lockState,
-                    satellitesUsed = uiState.telemetry.satellitesUsedInFix,
-                    satellitesVisible = uiState.telemetry.satellitesVisible
-                )
+            .background(ObsidianBlack)
+    ) {
+        val useNavRail = maxWidth >= 840.dp
 
-                // Smooth Slide + Fade Screen Transitions
-                AnimatedContent(
-                    targetState = uiState.currentScreen,
-                    transitionSpec = {
-                        val forward = targetState.ordinal > initialState.ordinal
-                        val slideIn = slideInHorizontally(animationSpec = tween(260)) { width ->
-                            if (forward) width / 3 else -width / 3
-                        } + fadeIn(animationSpec = tween(260))
-                        val slideOut = slideOutHorizontally(animationSpec = tween(220)) { width ->
-                            if (forward) -width / 3 else width / 3
-                        } + fadeOut(animationSpec = tween(200))
-                        slideIn.togetherWith(slideOut)
-                    },
-                    label = "screen_slide_fade_transition",
-                    modifier = Modifier.weight(1f)
-                ) { screen ->
-                    when (screen) {
-                        AppScreen.HOME -> FixPointCoreTab(
-                            uiState = uiState,
-                            onTogglePower = {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            containerColor = ObsidianBlack,
+            contentWindowInsets = WindowInsets.safeDrawing,
+            bottomBar = {
+                if (!useNavRail) {
+                    CrimsonBottomNavBar(
+                        currentScreen = uiState.currentScreen,
+                        onSelectScreen = { viewModel.selectScreen(it) }
+                    )
+                }
+            }
+        ) { innerPadding ->
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                if (useNavRail) {
+                    CrimsonNavRail(
+                        currentScreen = uiState.currentScreen,
+                        onSelectScreen = { viewModel.selectScreen(it) }
+                    )
+                }
+
+                Box(modifier = Modifier.weight(1f).fillMaxSize()) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        CrimsonTopHeader(
+                            currentScreen = uiState.currentScreen,
+                            lockState = uiState.lockState,
+                            satellitesUsed = uiState.telemetry.satellitesUsedInFix,
+                            isWorkSessionActive = uiState.activeWorkSession != null,
+                            onGpsPillClick = {
                                 val handled = viewModel.toggleMainPowerLock(context)
-                                if (!handled) {
-                                    requestForegroundPermissions(true)
-                                }
-                            },
-                            onCopyCoordinates = copyCoordinatesToClipboard,
-                            onShareCoordinates = shareCoordinatesIntent,
-                            onSaveLocation = { name -> viewModel.saveCurrentLocation(name) },
-                            onMapTapPin = { lat, lng -> viewModel.onMapTapPin(lat, lng) },
-                            onMuteZoneAlert = { viewModel.muteZoneAlert(context) },
-                            onNavigateToZoneTab = { viewModel.selectScreen(AppScreen.SAVED_LOCATIONS) },
-                            onRequestLocationPermission = { requestForegroundPermissions(true) },
-                            onOpenAppSettings = openSystemAppSettings,
-                            onRefreshRainForecast = { viewModel.refreshRainForecast(force = true) }
-                        )
-
-                        AppScreen.SAVED_LOCATIONS -> HotzonePinsTab(
-                            uiState = uiState,
-                            onSaveCurrentLocation = { name, moveActive ->
-                                viewModel.saveCurrentLocation(name, moveActive)
-                            },
-                            onMapTapPin = { lat, lng -> viewModel.onMapTapPin(lat, lng) },
-                            onSetMapTapMode = { mode -> viewModel.setMapTapActionMode(mode) },
-                            onPinOrMoveFromCoordinates = { rawCoords, customName, moveActive ->
-                                viewModel.pinOrMoveFromCoordinatesText(rawCoords, customName, moveActive)
-                            },
-                            onSelectActivePin = { id -> viewModel.selectActivePin(id) },
-                            onMoveSavedPin = { id, newLat, newLng, newName ->
-                                viewModel.moveSavedPin(id, newLat, newLng, newName)
-                            },
-                            onDeleteLocation = { id -> viewModel.deleteSavedLocation(id) },
-                            onSetZoneRadiusKm = { radiusKm -> viewModel.setZoneRadiusKm(radiusKm) },
-                            onCopyCoordinates = copyCoordinatesToClipboard,
-                            onShareCoordinates = shareCoordinatesIntent
-                        )
-
-                        AppScreen.WORK_AND_COST -> WorkAndCostTab(
-                            uiState = uiState,
-                            onAddDeliveryStop = { name, lat, lng ->
-                                viewModel.addDeliveryStop(name, lat, lng)
-                            },
-                            onAddDeliveryStopFromCoords = { rawCoords, name ->
-                                viewModel.addDeliveryStopFromCoordinatesText(rawCoords, name)
-                            },
-                            onEditDeliveryStop = { id, newName, newLat, newLng ->
-                                viewModel.editDeliveryStop(id, newName, newLat, newLng)
-                            },
-                            onToggleDeliveryStopDelivered = { id ->
-                                viewModel.toggleDeliveryStopDelivered(id)
-                            },
-                            onDeleteDeliveryStop = { id ->
-                                viewModel.deleteDeliveryStop(id)
-                            },
-                            onClearAllDeliveryStops = {
-                                viewModel.clearAllDeliveryStops()
-                            },
-                            onOptimizeDeliveryRoute = {
-                                viewModel.optimizeDeliveryRouteFromCurrentGps()
-                            },
-                            onUpdateFixedDailyCosts = { fuel ->
-                                viewModel.updateFixedDailyCosts(fuel)
-                            },
-                            onAddCustomExpense = { title, amt ->
-                                viewModel.addCustomExpense(title, amt)
-                            },
-                            onDeleteCustomExpense = { id ->
-                                viewModel.deleteCustomExpense(id)
-                            },
-                            onUpdateFuelSettings = { cap, cons, warn ->
-                                viewModel.updateFuelSettings(cap, cons, warn)
-                            },
-                            onMarkRefueledFullTank = {
-                                viewModel.markRefueledFullTank()
+                                if (!handled) requestForegroundPermissions(true)
                             }
                         )
 
-                        AppScreen.SETTINGS -> SmartOrderFilterTab(
-                            uiState = uiState,
-                            onToggleAlertVibration = { viewModel.setAlertVibrationEnabled(it) },
-                            onToggleAlertSound = { viewModel.setAlertSoundEnabled(it) },
-                            onSelectAlertTone = { viewModel.setAlertTone(it, playPreview = true) },
-                            onSetAlertVolumePercent = { viewModel.setAlertVolumePercent(it) },
-                            onSetGpsBufferMeters = { viewModel.setGpsBufferMeters(it) },
-                            onSelectMeasurementUnit = { viewModel.setMeasurementUnit(it) },
-                            onSelectCoordinateFormat = { viewModel.setCoordinateFormat(it) },
-                            onSelectUpdateFrequency = { viewModel.setUpdateFrequency(context, it) },
-                            onToggleKeepScreenOn = { viewModel.setKeepScreenOn(it) },
-                            onRequestForegroundPermissions = { requestForegroundPermissions(false) },
-                            onRequestBackgroundLocationPermission = requestBackgroundPermission,
-                            onRequestBatteryExemption = requestBatteryOptimizationExemption,
-                            onOpenSystemSettings = openSystemAppSettings,
-                            onToggleRainAlert = { viewModel.setRainAlertEnabled(it) },
-                            onSelectRainLeadTime = { viewModel.setRainLeadTimeOption(it) },
-                            onSetRainProbabilityThreshold = { viewModel.setRainProbabilityThreshold(it) }
-                        )
-                    }
-                }
-            }
+                        AnimatedContent(
+                            targetState = uiState.currentScreen,
+                            transitionSpec = {
+                                fadeIn(animationSpec = tween(220)).togetherWith(fadeOut(animationSpec = tween(160)))
+                            },
+                            label = "crimson_2_screen_transition",
+                            modifier = Modifier.weight(1f)
+                        ) { screen ->
+                            when (screen) {
+                                AppScreen.DASHBOARD -> DashboardScreen(
+                                    uiState = uiState,
+                                    onToggleWorkSession = { viewModel.toggleWorkSession(context) },
+                                    onToggleGpsLock = {
+                                        val handled = viewModel.toggleMainPowerLock(context)
+                                        if (!handled) requestForegroundPermissions(true)
+                                    },
+                                    onMuteZoneAlert = { viewModel.muteZoneAlert(context) },
+                                    onRequestLocationPermission = { requestForegroundPermissions(true) },
+                                    onNavigateToScreen = { viewModel.selectScreen(it) }
+                                )
 
-            // Sleek Floating Status Toast at Bottom
-            if (activeBanner != null) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(horizontal = 20.dp, vertical = 14.dp)
-                        .fillMaxWidth()
-                        .clip(PrecisionButtonShape)
-                        .background(Color(0xF2160D11))
-                        .border(1.dp, CrimsonNeon, PrecisionButtonShape)
-                        .padding(horizontal = 14.dp, vertical = 10.dp)
-                        .testTag("status_feedback_banner")
-                ) {
-                    Text(
-                        text = activeBanner,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextHudPrimary
-                    )
+                                AppScreen.AI_ASSISTANT -> AiAssistantScreen(
+                                    uiState = uiState,
+                                    onRequestStartScreenReader = {
+                                        if (viewModel.requestStartScreenReader()) {
+                                            launchMediaProjectionConsentIntent()
+                                        }
+                                    },
+                                    onAcceptScreenReaderConsentAndStart = {
+                                        viewModel.acceptScreenReaderConsent()
+                                        launchMediaProjectionConsentIntent()
+                                    },
+                                    onDismissScreenReaderConsent = { viewModel.dismissScreenReaderConsentDialog() },
+                                    onTriggerCaptureNow = { viewModel.triggerScreenReaderCaptureNow(context) },
+                                    onStopScreenReader = { viewModel.stopScreenReader(context) },
+                                    onImportScreenshot = {
+                                        photoPickerLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    },
+                                    onParseManualText = { text -> viewModel.parseManualOrPastedOrderText(text) },
+                                    onUpdateDraftFields = { payout, dist, dead, mins, pickup, dropoff ->
+                                        viewModel.updateOrderDraftFields(payout, dist, dead, mins, pickup, dropoff)
+                                    },
+                                    onResetDraft = { viewModel.resetOrderDraft() },
+                                    onSaveAnalyzedOrder = { logToEarnings ->
+                                        viewModel.saveCurrentAnalyzedOrder(logToEarnings)
+                                    },
+                                    onDeleteAnalyzedOrder = { id -> viewModel.deleteAnalyzedOrder(id) },
+                                    onNavigateToMapHotspot = { pinId ->
+                                        viewModel.selectMapPinForSheet(pinId)
+                                        viewModel.selectScreen(AppScreen.SMART_MAP)
+                                    }
+                                )
+
+                                AppScreen.SMART_MAP -> SmartMapScreen(
+                                    uiState = uiState,
+                                    onMapTapPin = { lat, lng -> viewModel.onMapTapPin(lat, lng) },
+                                    onSetMapTapMode = { mode -> viewModel.setMapTapActionMode(mode) },
+                                    onSetNewPinCategory = { cat -> viewModel.setNewPinCategory(cat) },
+                                    onUpdateLayerFilters = { transform -> viewModel.updateMapLayerFilters(transform) },
+                                    onSelectMapPinForSheet = { id -> viewModel.selectMapPinForSheet(id) },
+                                    onSelectActivePin = { id -> viewModel.selectActivePin(id) },
+                                    onSaveCurrentLocation = { name, move, cat ->
+                                        viewModel.saveCurrentLocation(name, move, cat)
+                                    },
+                                    onPinFromCoordinates = { coords, name, move, cat ->
+                                        viewModel.pinOrMoveFromCoordinatesText(coords, name, move, cat)
+                                    },
+                                    onDeletePin = { id -> viewModel.deleteSavedLocation(id) },
+                                    onSetZoneRadiusKm = { km -> viewModel.setZoneRadiusKm(km) },
+                                    onSearchNearbyFuel = { viewModel.searchNearbyFuelStations(forceRefresh = true) },
+                                    onCopyCoordinates = copyCoordinates,
+                                    onShareCoordinates = shareCoordinates
+                                )
+
+                                AppScreen.EARNINGS -> EarningsAnalyticsScreen(
+                                    uiState = uiState,
+                                    onSelectPeriod = { viewModel.selectEarningsPeriod(it) },
+                                    onShiftDate = { viewModel.shiftEarningsDate(it) },
+                                    onResetDateToToday = { viewModel.resetEarningsDateToToday() },
+                                    onSelectHistoryFilter = { viewModel.selectEarningsHistoryFilter(it) },
+                                    onUpdateGoals = { d, w, m -> viewModel.updateEarningsGoals(d, w, m) },
+                                    onUpdateDailyWorkHours = { dk, hrs -> viewModel.updateDailyWorkHours(dk, hrs) },
+                                    onAddTransaction = { type, dk, title, cat, amt, dist, mins ->
+                                        viewModel.addEarningsTransaction(type, dk, title, cat, amt, dist, mins)
+                                    },
+                                    onDeleteTransaction = { viewModel.deleteEarningsTransaction(it) }
+                                )
+
+                                AppScreen.PROFILE -> ProfileSettingsScreen(
+                                    uiState = uiState,
+                                    onUpdateRiderProfile = { viewModel.updateRiderProfile(it) },
+                                    onUpdateFuelSettings = { cap, cons, warn ->
+                                        viewModel.updateFuelSettings(cap, cons, warn)
+                                    },
+                                    onMarkRefueledFullTank = { viewModel.markRefueledFullTank() },
+                                    onUpdatePrivacy = { viewModel.updatePrivacyPreferences(it) },
+                                    onClearOcrHistory = { viewModel.clearAllAnalyzedOrders() },
+                                    onToggleAlertVibration = { viewModel.setAlertVibrationEnabled(it) },
+                                    onSetGpsBufferMeters = { viewModel.setGpsBufferMeters(it) },
+                                    onSelectMeasurementUnit = { viewModel.setMeasurementUnit(it) },
+                                    onSelectCoordinateFormat = { viewModel.setCoordinateFormat(it) },
+                                    onSelectUpdateFrequency = { viewModel.setUpdateFrequency(context, it) },
+                                    onToggleKeepScreenOn = { viewModel.setKeepScreenOn(it) },
+                                    onRequestForegroundPermissions = { requestForegroundPermissions(false) },
+                                    onRequestBackgroundPermission = requestBackgroundPermission,
+                                    onRequestBatteryExemption = requestBatteryExemption,
+                                    onOpenSystemSettings = openSystemSettings,
+                                    onExportLocalBackup = {
+                                        val stamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
+                                        exportBackupLauncher.launch("crimson_fixpoint_backup_$stamp.json")
+                                    },
+                                    onImportLocalBackup = {
+                                        importBackupLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    // Sleek Floating Status Toast Banner
+                    if (activeBanner != null) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(horizontal = 18.dp, vertical = 14.dp)
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Color(0xF5181018))
+                                .border(1.dp, CrimsonNeon, RoundedCornerShape(14.dp))
+                                .padding(horizontal = 14.dp, vertical = 10.dp)
+                                .testTag("status_feedback_banner")
+                        ) {
+                            Text(
+                                text = activeBanner,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextHudPrimary
+                            )
+                        }
+                    }
                 }
             }
         }

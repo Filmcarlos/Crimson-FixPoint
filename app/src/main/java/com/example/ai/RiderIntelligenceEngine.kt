@@ -1,0 +1,453 @@
+package com.example.ai
+
+import com.example.model.AiRecommendationCard
+import com.example.model.AnalyzedOrderRecord
+import com.example.model.AppScreen
+import com.example.model.EarningsRecordType
+import com.example.model.EarningsSummaryMetrics
+import com.example.model.EarningsTransaction
+import com.example.model.ExpenseCategoryBreakdown
+import com.example.model.FuelEstimateState
+import com.example.model.FuelIntelligenceSummary
+import com.example.model.GeoMath
+import com.example.model.HotspotRecommendation
+import com.example.model.OrderAnalysisResult
+import com.example.model.OrderGrade
+import com.example.model.ParsedOrderDraft
+import com.example.model.PinCategory
+import com.example.model.RecommendationPriority
+import com.example.model.RiderProfileConfig
+import com.example.model.SavedLocationItem
+import com.example.model.ZoneMonitorStatus
+import java.util.Locale
+import kotlin.math.max
+import kotlin.math.roundToInt
+
+/**
+ * Pure, deterministic, offline AI Rider Intelligence Engine for Crimson FixPoint 2.0.
+ * Computes order profitability, Smart Order Score, dead mileage analysis, fuel intelligence,
+ * historical hotspot rankings, expense breakdowns, and prioritized rider recommendations.
+ */
+object RiderIntelligenceEngine {
+
+    /**
+     * Evaluates an order draft using actual rider fuel efficiency, fuel price, maintenance rate,
+     * and minimum target earnings thresholds.
+     */
+    fun analyzeOrder(
+        draft: ParsedOrderDraft,
+        profile: RiderProfileConfig,
+        fuelState: FuelEstimateState
+    ): OrderAnalysisResult? {
+        val payout = draft.payoutBaht ?: return null
+        val tripDistance = draft.distanceKm ?: return null
+        if (payout <= 0.0 || tripDistance <= 0.0) return null
+
+        val deadKm = (draft.deadMileageKm ?: 0.0).coerceAtLeast(0.0)
+        val totalDistance = (tripDistance + deadKm).coerceAtLeast(0.05)
+        val kmPerLiter = fuelState.consumptionKmPerLiter.coerceAtLeast(1.0f).toDouble()
+        val fuelPrice = profile.fuelPricePerLiterBaht.coerceAtLeast(0f).toDouble()
+        val maintPerKm = profile.maintenanceBahtPerKm.coerceAtLeast(0f).toDouble()
+
+        val fuelCost = (totalDistance / kmPerLiter) * fuelPrice
+        val maintCost = totalDistance * maintPerKm
+        val netProfit = payout - fuelCost - maintCost
+
+        val earningsPerKm = payout / totalDistance
+        val estMins = draft.estimatedMinutes?.takeIf { it > 0 }
+        val earningsPerHour = estMins?.let { mins ->
+            netProfit / (mins / 60.0)
+        }
+
+        val deadMileageRatio = (deadKm / totalDistance).toFloat().coerceIn(0f, 1f)
+
+        // Score components (0..100)
+        val targetPerKm = profile.minAcceptableBahtPerKm.coerceAtLeast(1.0f).toDouble()
+        val kmScore = ((earningsPerKm / targetPerKm) * 35.0).coerceIn(0.0, 42.0)
+
+        val profitMargin = (netProfit / payout).coerceIn(-0.5, 1.0)
+        val marginScore = ((profitMargin / 0.85) * 26.0).coerceIn(0.0, 26.0)
+
+        val hourScore = if (earningsPerHour != null) {
+            val targetPerHr = profile.minAcceptableBahtPerHour.coerceAtLeast(20.0f).toDouble()
+            ((earningsPerHour / targetPerHr) * 24.0).coerceIn(0.0, 26.0)
+        } else {
+            // Neutral partial weight when duration is unavailable — never fabricate duration
+            14.0
+        }
+
+        val deadMileagePenalty = when {
+            deadMileageRatio > 0.45f -> 18.0
+            deadMileageRatio > 0.30f -> 11.0
+            deadMileageRatio > 0.20f -> 5.0
+            else -> 0.0
+        }
+
+        val bonusShortHighYield = if (totalDistance <= 4.0 && netProfit >= 35.0) 6.0 else 0.0
+
+        val rawScore = (kmScore + marginScore + hourScore + bonusShortHighYield - deadMileagePenalty)
+            .roundToInt()
+            .coerceIn(0, 100)
+
+        val grade = when {
+            netProfit <= 0.0 -> OrderGrade.D
+            rawScore >= 84 -> OrderGrade.S
+            rawScore >= 70 -> OrderGrade.A
+            rawScore >= 55 -> OrderGrade.B
+            rawScore >= 40 -> OrderGrade.C
+            else -> OrderGrade.D
+        }
+
+        val explanations = buildList {
+            add(
+                String.format(
+                    Locale.US,
+                    "กำไรสุทธิหลังหักน้ำมัน (฿%.1f) และค่าเสื่อม (฿%.1f) อยู่ที่ ฿%.1f",
+                    fuelCost,
+                    maintCost,
+                    netProfit
+                )
+            )
+            add(
+                String.format(
+                    Locale.US,
+                    "รายได้เฉลี่ย ฿%.1f/กม. (เกณฑ์ขั้นต่ำที่ตั้งไว้ ฿%.1f/กม.)",
+                    earningsPerKm,
+                    targetPerKm
+                )
+            )
+            if (earningsPerHour != null && estMins != null) {
+                add(
+                    String.format(
+                        Locale.US,
+                        "อัตราทำกำไร ~฿%.0f/ชม. จากเวลาประมาณ %d นาที",
+                        earningsPerHour,
+                        estMins
+                    )
+                )
+            } else {
+                add("ไม่ได้ระบุเวลาโดยประมาณ — กรอกจำนวนนาทีเพื่อคำนวณ ฿/ชม. ที่แม่นยำขึ้น")
+            }
+            if (deadKm > 0.0) {
+                add(
+                    String.format(
+                        Locale.US,
+                        "ระยะวิ่งเปล่า (Dead Mileage) %.1f กม. (%.0f%% ของระยะรวม)",
+                        deadKm,
+                        deadMileageRatio * 100f
+                    )
+                )
+            }
+        }
+
+        val warnings = buildList {
+            addAll(draft.warnings)
+            if (netProfit <= 0.0) {
+                add("งานนี้ขาดทุนสุทธิเมื่อหักค่าน้ำมันและค่าบำรุงรักษา")
+            }
+            if (deadMileageRatio > 0.30f) {
+                add("สัดส่วนระยะวิ่งเปล่าสูงกว่า 30% เสี่ยงสิ้นเปลืองน้ำมันและเวลา")
+            }
+            if (fuelState.estimatedRemainingRangeKm < totalDistance + 5.0) {
+                add("น้ำมันคงเหลือในถัง (~${String.format(Locale.US, "%.1f", fuelState.estimatedRemainingRangeKm)} กม.) อาจไม่พอสำหรับงานนี้")
+            }
+        }
+
+        val effectiveConfidence = if (draft.wasUserCorrected) {
+            if (estMins != null) 0.98f else 0.85f
+        } else {
+            draft.overallConfidence.coerceIn(0.25f, 1.0f)
+        }
+
+        return OrderAnalysisResult(
+            smartScore = rawScore,
+            grade = grade,
+            confidenceScore = effectiveConfidence,
+            grossPayoutBaht = payout,
+            totalDistanceKm = totalDistance,
+            tripDistanceKm = tripDistance,
+            deadMileageKm = deadKm,
+            estimatedMinutes = estMins,
+            fuelCostBaht = fuelCost,
+            maintenanceCostBaht = maintCost,
+            netProfitBaht = netProfit,
+            earningsPerKm = earningsPerKm,
+            earningsPerHour = earningsPerHour,
+            deadMileageRatio = deadMileageRatio,
+            explanations = explanations,
+            warnings = warnings,
+            isIncompleteData = estMins == null
+        )
+    }
+
+    fun computeFuelIntelligence(
+        fuelState: FuelEstimateState,
+        profile: RiderProfileConfig
+    ): FuelIntelligenceSummary {
+        val kmPerL = fuelState.consumptionKmPerLiter.coerceAtLeast(1.0f).toDouble()
+        val fuelCostPerKm = profile.fuelPricePerLiterBaht.toDouble() / kmPerL
+        val missingLiters = (fuelState.tankCapacityLiters - fuelState.remainingLiters).coerceAtLeast(0f)
+        val refillCost = missingLiters * profile.fuelPricePerLiterBaht
+        val advice = when {
+            fuelState.isLowFuel -> String.format(
+                Locale.US,
+                "น้ำมันใกล้หมด (เหลือ ~%.2f ลิตร / วิ่งได้ ~%.0f กม.) ควรแวะเติมประมาณ ฿%.0f",
+                fuelState.remainingLiters,
+                fuelState.estimatedRemainingRangeKm,
+                refillCost
+            )
+            fuelCostPerKm > 1.8 -> String.format(
+                Locale.US,
+                "ต้นทุนน้ำมัน ฿%.2f/กม. แนะนำเน้นงานระยะสั้นภายในโซนเพื่อลด Dead Mileage",
+                fuelCostPerKm
+            )
+            else -> String.format(
+                Locale.US,
+                "ต้นทุนน้ำมันประหยัด ฿%.2f/กม. วิ่งต่อได้อีก ~%.0f กม.",
+                fuelCostPerKm,
+                fuelState.estimatedRemainingRangeKm
+            )
+        }
+        return FuelIntelligenceSummary(
+            fuelCostPerKmBaht = fuelCostPerKm,
+            remainingLiters = fuelState.remainingLiters,
+            remainingRangeKm = fuelState.estimatedRemainingRangeKm,
+            tankFillFraction = fuelState.remainingFraction,
+            estimatedRefillCostBaht = refillCost.toDouble(),
+            isLowFuel = fuelState.isLowFuel,
+            adviceTh = advice
+        )
+    }
+
+    /**
+     * Ranks saved FixPoints, Hotzones, and Restaurants + historical analyzed order spots.
+     * Always explicitly flagged with [HotspotRecommendation.isHistoricalEstimate] = true so riders
+     * clearly know these come from local historical records, NOT fabricated real-time server demand.
+     */
+    fun computeHotspotRecommendations(
+        savedPins: List<SavedLocationItem>,
+        analyzedOrders: List<AnalyzedOrderRecord>,
+        riderLat: Double?,
+        riderLng: Double?
+    ): List<HotspotRecommendation> {
+        val candidates = savedPins.filter {
+            it.category == PinCategory.HOTZONE ||
+                it.category == PinCategory.RESTAURANT ||
+                it.category == PinCategory.FIXPOINT
+        }
+
+        val scored = candidates.map { pin ->
+            val distKm = if (riderLat != null && riderLng != null) {
+                GeoMath.haversineKm(riderLat, riderLng, pin.latitude, pin.longitude)
+            } else {
+                null
+            }
+
+            // Aggregate local historical analyzed orders within 1.5 km of this marker
+            val nearbyOrders = analyzedOrders.filter { ord ->
+                ord.latitude != null && ord.longitude != null &&
+                    GeoMath.haversineKm(pin.latitude, pin.longitude, ord.latitude, ord.longitude) <= 1.5
+            }
+            val totalHistCount = pin.historicalOrderCount + nearbyOrders.size
+            val avgPayout = when {
+                nearbyOrders.isNotEmpty() -> nearbyOrders.map { it.payoutBaht }.average()
+                pin.historicalAvgPayoutBaht > 0.0 -> pin.historicalAvgPayoutBaht
+                else -> 0.0
+            }
+
+            val proximityBonus = if (distKm != null) (1f / (1f + distKm.toFloat() * 0.45f)) else 0.5f
+            val categoryBonus = when (pin.category) {
+                PinCategory.HOTZONE -> 0.35f
+                PinCategory.RESTAURANT -> 0.25f
+                PinCategory.FIXPOINT -> 0.20f
+                else -> 0.05f
+            }
+            val historyBonus = (totalHistCount.coerceAtMost(20) / 20f) * 0.35f
+            val heat = (proximityBonus * 0.4f + categoryBonus + historyBonus).coerceIn(0.15f, 1.0f)
+
+            val reason = buildString {
+                append(pin.category.labelTh)
+                if (distKm != null) {
+                    append(String.format(Locale.US, " • ห่าง %.1f กม.", distKm))
+                }
+                if (totalHistCount > 0) {
+                    append(" • ประวัติ $totalHistCount งาน")
+                    if (avgPayout > 0.0) {
+                        append(String.format(Locale.US, " (เฉลี่ย ฿%.0f)", avgPayout))
+                    }
+                } else {
+                    append(" • จุดอ้างอิงที่บันทึกไว้ (ประเมินจากประวัติในเครื่อง)")
+                }
+            }
+
+            HotspotRecommendation(
+                id = pin.id,
+                name = pin.name,
+                category = pin.category,
+                latitude = pin.latitude,
+                longitude = pin.longitude,
+                distanceFromRiderKm = distKm,
+                historicalAvgPayoutBaht = avgPayout,
+                historicalOrderCount = totalHistCount,
+                estimatedHeatScore = heat,
+                isHistoricalEstimate = true,
+                reasonTh = reason
+            )
+        }
+
+        return scored.sortedByDescending { it.estimatedHeatScore }.take(6)
+    }
+
+    fun computeExpenseBreakdown(transactions: List<EarningsTransaction>): List<ExpenseCategoryBreakdown> {
+        val expenses = transactions.filter { it.type == EarningsRecordType.EXPENSE && it.amountBaht > 0.0 }
+        val total = expenses.sumOf { it.amountBaht }
+        if (total <= 0.0) return emptyList()
+        return expenses
+            .groupBy { it.category.ifBlank { "อื่นๆ" } }
+            .map { (cat, rows) ->
+                val sum = rows.sumOf { it.amountBaht }
+                ExpenseCategoryBreakdown(
+                    category = cat,
+                    amountBaht = sum,
+                    fraction = (sum / total).toFloat().coerceIn(0f, 1f)
+                )
+            }
+            .sortedByDescending { it.amountBaht }
+    }
+
+    fun generateDashboardRecommendations(
+        todaySummary: EarningsSummaryMetrics,
+        fuelIntel: FuelIntelligenceSummary,
+        zoneStatus: ZoneMonitorStatus,
+        excessDistanceMeters: Double,
+        hotspots: List<HotspotRecommendation>,
+        analyzedOrders: List<AnalyzedOrderRecord>,
+        isSessionActive: Boolean
+    ): List<AiRecommendationCard> {
+        val list = mutableListOf<AiRecommendationCard>()
+
+        if (zoneStatus == ZoneMonitorStatus.OUTSIDE_ZONE) {
+            list.add(
+                AiRecommendationCard(
+                    id = "rec_out_of_zone",
+                    titleTh = "ออกนอกโซนรับงานแล้ว",
+                    subtitleTh = "เกินรัศมี ${GeoMath.formatShortZoneDistanceTh(excessDistanceMeters)} แนะนำกลับเข้าโซนหลักเพื่อลดระยะวิ่งเปล่า",
+                    badgeText = "ZONE ALERT",
+                    priority = RecommendationPriority.CRITICAL,
+                    targetScreen = AppScreen.SMART_MAP
+                )
+            )
+        }
+
+        if (fuelIntel.isLowFuel) {
+            list.add(
+                AiRecommendationCard(
+                    id = "rec_low_fuel",
+                    titleTh = "ระดับน้ำมันต่ำกว่าเกณฑ์แจ้งเตือน",
+                    subtitleTh = fuelIntel.adviceTh,
+                    badgeText = "FUEL INTEL",
+                    priority = RecommendationPriority.CRITICAL,
+                    targetScreen = AppScreen.PROFILE
+                )
+            )
+        }
+
+        if (!isSessionActive && todaySummary.jobCount == 0) {
+            list.add(
+                AiRecommendationCard(
+                    id = "rec_start_shift",
+                    titleTh = "พร้อมเริ่มรอบวิ่งงานวันนี้",
+                    subtitleTh = "กดเริ่มรอบงานเพื่อติดตามระยะทาง GPS เวลาทำงาน และวิเคราะห์ความคุ้มค่าออเดอร์อัตโนมัติ",
+                    badgeText = "SHIFT READY",
+                    priority = RecommendationPriority.HIGH,
+                    targetScreen = AppScreen.DASHBOARD
+                )
+            )
+        } else if (todaySummary.goalBaht > 0.0 && !todaySummary.isGoalReached) {
+            list.add(
+                AiRecommendationCard(
+                    id = "rec_goal_pace",
+                    titleTh = String.format(Locale.US, "อีก ฿%.0f จะถึงเป้ารายวัน", todaySummary.remainingToGoalBaht),
+                    subtitleTh = if (todaySummary.avgIncomePerKm > 0.0) {
+                        String.format(
+                            Locale.US,
+                            "ค่าเฉลี่ยวันนี้ ฿%.1f/กม. • เลือกงานคะแนน A/S เพื่อปิดเป้าเร็วขึ้น",
+                            todaySummary.avgIncomePerKm
+                        )
+                    } else {
+                        "ใช้ Smart Order Reader วิเคราะห์ออเดอร์ก่อนรับเพื่อรักษากำไรสุทธิต่อกิโลเมตร"
+                    },
+                    badgeText = "TARGET PACE",
+                    priority = RecommendationPriority.HIGH,
+                    targetScreen = AppScreen.AI_ASSISTANT
+                )
+            )
+        } else if (todaySummary.isGoalReached) {
+            list.add(
+                AiRecommendationCard(
+                    id = "rec_goal_done",
+                    titleTh = "บรรลุเป้ารายวันแล้ว!",
+                    subtitleTh = String.format(
+                        Locale.US,
+                        "กำไรสุทธิวันนี้ ฿%.0f • พิจารณาคัดเฉพาะงานเกรด S เพื่อลดความล้าและค่าน้ำมัน",
+                        todaySummary.netProfitBaht
+                    ),
+                    badgeText = "GOAL HIT",
+                    priority = RecommendationPriority.INFO,
+                    targetScreen = AppScreen.EARNINGS
+                )
+            )
+        }
+
+        val avgDeadMileageRatio = analyzedOrders
+            .take(10)
+            .mapNotNull { o ->
+                val tot = o.distanceKm + o.deadMileageKm
+                if (tot > 0.0) o.deadMileageKm / tot else null
+            }
+            .takeIf { it.isNotEmpty() }
+            ?.average() ?: 0.0
+
+        if (avgDeadMileageRatio > 0.25) {
+            list.add(
+                AiRecommendationCard(
+                    id = "rec_dead_mileage",
+                    titleTh = "ระยะวิ่งเปล่าเฉลี่ยสูง (${(avgDeadMileageRatio * 100).roundToInt()}%)",
+                    subtitleTh = "งานล่าสุดมีระยะวิ่งไปรับร้านค่อนข้างไกล แนะนำจอดรอใกล้โซนฮอตสปอตที่บันทึกไว้",
+                    badgeText = "DEAD MILEAGE",
+                    priority = RecommendationPriority.HIGH,
+                    targetScreen = AppScreen.SMART_MAP
+                )
+            )
+        }
+
+        val topHotspot = hotspots.firstOrNull()
+        if (topHotspot != null) {
+            list.add(
+                AiRecommendationCard(
+                    id = "rec_hotspot_${topHotspot.id}",
+                    titleTh = "จุดแนะนำถัดไป: ${topHotspot.name}",
+                    subtitleTh = "${topHotspot.reasonTh} (ข้อมูลประวัติในเครื่อง)",
+                    badgeText = "HISTORICAL",
+                    priority = RecommendationPriority.INFO,
+                    targetScreen = AppScreen.SMART_MAP
+                )
+            )
+        }
+
+        if (analyzedOrders.isEmpty()) {
+            list.add(
+                AiRecommendationCard(
+                    id = "rec_try_ocr",
+                    titleTh = "ทดลองวิเคราะห์ออเดอร์ด้วย AI Assistant",
+                    subtitleTh = "นำเข้าภาพแคปหน้าจอหรือเปิด Screen Reader เพื่อคำนวณ Smart Order Score แบบออฟไลน์ 100%",
+                    badgeText = "ORDER AI",
+                    priority = RecommendationPriority.INFO,
+                    targetScreen = AppScreen.AI_ASSISTANT
+                )
+            )
+        }
+
+        return list.take(4)
+    }
+}

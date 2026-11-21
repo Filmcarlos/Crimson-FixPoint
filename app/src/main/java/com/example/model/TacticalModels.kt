@@ -12,11 +12,20 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-enum class AppScreen(val titleTh: String) {
-    HOME("หน้าหลัก"),
-    SAVED_LOCATIONS("หมุดและโซน"),
-    WORK_AND_COST("งานและต้นทุน"),
-    SETTINGS("การตั้งค่า")
+enum class AppScreen(val titleTh: String, val titleEn: String) {
+    DASHBOARD("ภาพรวม", "Dashboard"),
+    AI_ASSISTANT("AI ผู้ช่วย", "AI Assistant"),
+    SMART_MAP("แผนที่", "Smart Map"),
+    EARNINGS("รายได้", "Earnings"),
+    PROFILE("โปรไฟล์", "Profile")
+}
+
+enum class PinCategory(val labelTh: String) {
+    FIXPOINT("หมุด FixPoint"),
+    HOTZONE("โซนฮอตสปอต"),
+    RESTAURANT("ร้านอาหาร/จุดรับ"),
+    FUEL("ปั๊มน้ำมัน"),
+    REST_AREA("จุดพักรถ")
 }
 
 enum class GpsLockState(val labelTh: String, val subLabelTh: String) {
@@ -33,15 +42,6 @@ enum class ZoneMonitorStatus(
     WAITING_FOR_GPS("รอสัญญาณ GPS", "พิกัดปัจจุบัน: —"),
     INSIDE_ZONE("อยู่ในโซนรับงาน", "ภายในรัศมีที่กำหนด"),
     OUTSIDE_ZONE("ออกนอกโซนรับงานแล้ว", "เกินรัศมีที่กำหนด")
-}
-
-enum class ZoneAlertTone(
-    val titleTh: String,
-    val subtitleTh: String
-) {
-    SIREN_DUAL("สัญญาณเตือนภัยสองจังหวะ", "880 Hz / 622 Hz"),
-    HIGH_PULSE("พัลส์ความถี่สูงคู่", "1397 Hz / 1760 Hz"),
-    SONAR_DEEP("คลื่นโซนาร์ทุ้มลึก", "330 Hz / 220 Hz")
 }
 
 enum class MapTapActionMode(val labelTh: String) {
@@ -82,7 +82,11 @@ data class SavedLocationItem(
     val longitude: Double,
     val accuracyMeters: Float?,
     val altitudeMeters: Double?,
-    val timestampMillis: Long
+    val timestampMillis: Long,
+    val category: PinCategory = PinCategory.FIXPOINT,
+    val historicalOrderCount: Int = 0,
+    val historicalAvgPayoutBaht: Double = 0.0,
+    val notes: String = ""
 ) {
     fun formattedTimestamp(): String {
         val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.US)
@@ -96,6 +100,7 @@ data class SavedLocationItem(
         fun serializeList(items: List<SavedLocationItem>): String {
             return items.joinToString(RECORD_SEP) { item ->
                 val safeName = item.name.replace(RECORD_SEP, " ").replace(FIELD_SEP, " ")
+                val safeNotes = item.notes.replace(RECORD_SEP, " ").replace(FIELD_SEP, " ")
                 listOf(
                     item.id,
                     safeName,
@@ -103,7 +108,11 @@ data class SavedLocationItem(
                     item.longitude.toString(),
                     item.accuracyMeters?.toString() ?: "",
                     item.altitudeMeters?.toString() ?: "",
-                    item.timestampMillis.toString()
+                    item.timestampMillis.toString(),
+                    item.category.name,
+                    item.historicalOrderCount.toString(),
+                    item.historicalAvgPayoutBaht.toString(),
+                    safeNotes
                 ).joinToString(FIELD_SEP)
             }
         }
@@ -118,6 +127,12 @@ data class SavedLocationItem(
                 val acc = parts[4].toFloatOrNull()
                 val alt = parts[5].toDoubleOrNull()
                 val ts = parts[6].toLongOrNull() ?: System.currentTimeMillis()
+                val category = parts.getOrNull(7)
+                    ?.let { runCatching { PinCategory.valueOf(it) }.getOrNull() }
+                    ?: PinCategory.FIXPOINT
+                val histCount = parts.getOrNull(8)?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+                val histAvg = parts.getOrNull(9)?.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
+                val notes = parts.getOrNull(10).orEmpty()
                 SavedLocationItem(
                     id = parts[0].ifBlank { "LOC-$ts" },
                     name = parts[1].ifBlank { "หมุดโซนรับงาน" },
@@ -125,7 +140,11 @@ data class SavedLocationItem(
                     longitude = lng,
                     accuracyMeters = acc,
                     altitudeMeters = alt,
-                    timestampMillis = ts
+                    timestampMillis = ts,
+                    category = category,
+                    historicalOrderCount = histCount,
+                    historicalAvgPayoutBaht = histAvg,
+                    notes = notes
                 )
             }
         }

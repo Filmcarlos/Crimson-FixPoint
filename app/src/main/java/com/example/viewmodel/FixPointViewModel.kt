@@ -1,49 +1,69 @@
 package com.example.viewmodel
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.location.Location
+import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.ai.MlKitOrderOcrEngine
+import com.example.ai.OcrScanOutcome
+import com.example.ai.OrderOcrParser
+import com.example.ai.RiderIntelligenceEngine
+import com.example.data.local.StoredRiderPreferences
+import com.example.data.repository.FixPointRepository
+import com.example.model.AnalyzedOrderRecord
 import com.example.model.AppScreen
 import com.example.model.CoordinateFormat
 import com.example.model.CustomExpenseItem
 import com.example.model.DailyBreakEvenState
-import com.example.model.DailyFinancialHistoryItem
-import com.example.model.DeliveryStopItem
+import com.example.model.DailyWorkMetrics
+import com.example.model.EarningsGoals
+import com.example.model.EarningsHistoryFilter
+import com.example.model.EarningsPeriod
+import com.example.model.EarningsRecordType
+import com.example.model.EarningsTransaction
 import com.example.model.FuelEstimateState
 import com.example.model.GeoMath
 import com.example.model.GpsLockState
 import com.example.model.JobIncomeEntry
 import com.example.model.LiveGnssTelemetry
+import com.example.model.MapLayerFilters
 import com.example.model.MapTapActionMode
 import com.example.model.MeasurementUnit
-import com.example.model.RainForecastState
-import com.example.model.RainLeadTimeOption
-import com.example.model.RouteOptimizer
+import com.example.model.OrderAnalysisResult
+import com.example.model.OrderInputSource
+import com.example.model.ParsedOrderDraft
+import com.example.model.PinCategory
+import com.example.model.PrivacyPreferences
+import com.example.model.RiderProfileConfig
 import com.example.model.SatelliteBarItem
 import com.example.model.SavedLocationItem
-import com.example.model.StopPoiCategory
+import com.example.model.ScreenReaderState
+import com.example.model.SmartEarningsCalculator
+import com.example.model.SmartEarningsState
 import com.example.model.StopPoiItem
 import com.example.model.UpdateFrequency
-import com.example.model.WeatherForecastStatus
-import com.example.model.ZoneAlertTone
+import com.example.model.WorkSessionRecord
 import com.example.model.ZoneMonitorStatus
 import com.example.service.GpsKeepAliveService
 import com.example.service.GpsServiceRuntimeBus
 import com.example.service.LocationService
+import com.example.service.ScreenReaderCaptureService
+import com.example.service.ScreenReaderRuntimeBus
 import com.example.service.ServiceZoneConfig
 import com.example.service.SmoothedLocationUpdate
 import com.example.util.NetworkClients
-import com.example.util.OpenMeteoResult
 import com.example.util.OverpassFuelResult
 import com.example.util.TacticalSoundEngine
+import com.example.worker.DailyMaintenanceWorker
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,11 +74,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.max
 import kotlin.math.roundToInt
 
 data class FixPointUiState(
-    val currentScreen: AppScreen = AppScreen.HOME,
+    val currentScreen: AppScreen = AppScreen.DASHBOARD,
+    // GPS Lock & Zone Monitoring (preserved & enhanced)
     val isLockEnabled: Boolean = false,
     val lockState: GpsLockState = GpsLockState.OFF,
     val telemetry: LiveGnssTelemetry = LiveGnssTelemetry(),
@@ -67,37 +89,42 @@ data class FixPointUiState(
     val zoneRadiusKm: Float = 5.0f,
     val gpsBufferMeters: Int = 20,
     val mapTapActionMode: MapTapActionMode = MapTapActionMode.MOVE_ACTIVE_PIN,
+    val newPinCategory: PinCategory = PinCategory.FIXPOINT,
+    val mapLayerFilters: MapLayerFilters = MapLayerFilters(),
+    val selectedMapPinId: String? = null,
     val zoneStatus: ZoneMonitorStatus = ZoneMonitorStatus.NO_ACTIVE_PIN,
     val currentDistanceFromPinMeters: Double? = null,
     val excessDistanceMeters: Double = 0.0,
     val isZoneAlertMuted: Boolean = false,
     val alertVibrationEnabled: Boolean = true,
-    val alertSoundEnabled: Boolean = true,
-    val alertTone: ZoneAlertTone = ZoneAlertTone.SIREN_DUAL,
-    val alertVolumePercent: Int = 85,
     val measurementUnit: MeasurementUnit = MeasurementUnit.METRIC,
     val updateFrequency: UpdateFrequency = UpdateFrequency.STANDARD,
     val coordinateFormat: CoordinateFormat = CoordinateFormat.DECIMAL,
     val keepScreenOn: Boolean = true,
-    // Feature 2: Delivery Route Stops (max 15)
-    val deliveryStops: List<DeliveryStopItem> = emptyList(),
-    val totalDeliveryRouteKm: Double = 0.0,
-    // Feature 3: Daily Break-Even & Profit
-    val breakEvenState: DailyBreakEvenState = DailyBreakEvenState(),
-    // Feature 4: Fuel Estimator
+    // Rider Profile, Privacy & Fuel Intelligence
+    val riderProfile: RiderProfileConfig = RiderProfileConfig(),
+    val privacyPreferences: PrivacyPreferences = PrivacyPreferences(),
     val fuelState: FuelEstimateState = FuelEstimateState(),
-    // Feature 5: Fuel Stations & Rest Stops (User Saved + Overpass 24h Cache)
-    val savedPois: List<StopPoiItem> = emptyList(),
+    // Earnings & Break-Even (Room-backed)
+    val breakEvenState: DailyBreakEvenState = DailyBreakEvenState(),
+    val smartEarningsState: SmartEarningsState = SmartEarningsState(),
+    // Work Sessions
+    val workSessions: List<WorkSessionRecord> = emptyList(),
+    val sessionClockTickMillis: Long = System.currentTimeMillis(),
+    // AI Assistant, OCR & MediaProjection Screen Reader
+    val analyzedOrders: List<AnalyzedOrderRecord> = emptyList(),
+    val currentOrderDraft: ParsedOrderDraft = ParsedOrderDraft(),
+    val currentOrderAnalysis: OrderAnalysisResult? = null,
+    val isRunningOcr: Boolean = false,
+    val ocrErrorMessageTh: String? = null,
+    val screenReaderState: ScreenReaderState = ScreenReaderState.IDLE,
+    val showScreenReaderConsentDialog: Boolean = false,
+    // Overpass Optional Fuel Discovery
     val nearbyOverpassFuelPois: List<StopPoiItem> = emptyList(),
     val overpassSearchRadiusKm: Int = 5,
     val isSearchingOverpass: Boolean = false,
     val overpassErrorOrStatusTh: String? = null,
-    val overpassCacheTimestampMillis: Long = 0L,
-    val overpassLastSearchLat: Double? = null,
-    val overpassLastSearchLng: Double? = null,
-    // Feature 6: Rain Forecast & Alert (Open-Meteo)
-    val rainForecast: RainForecastState = RainForecastState(),
-    // System Permissions
+    // System Permissions & Feedback
     val hasFineLocationPermission: Boolean = false,
     val hasCoarseLocationPermission: Boolean = false,
     val hasBackgroundLocationPermission: Boolean = false,
@@ -111,6 +138,12 @@ data class FixPointUiState(
 
     val activePin: SavedLocationItem?
         get() = savedLocations.firstOrNull { it.id == activePinId } ?: savedLocations.firstOrNull()
+
+    val selectedMapPin: SavedLocationItem?
+        get() = savedLocations.firstOrNull { it.id == selectedMapPinId }
+
+    val activeWorkSession: WorkSessionRecord?
+        get() = workSessions.firstOrNull { it.isActive }
 }
 
 class FixPointViewModel : ViewModel() {
@@ -118,15 +151,15 @@ class FixPointViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(FixPointUiState())
     val uiState: StateFlow<FixPointUiState> = _uiState.asStateFlow()
 
-    private var prefs: SharedPreferences? = null
+    private var repository: FixPointRepository? = null
     private var locationService: LocationService? = null
     private var appContextRef: Context? = null
     private var isInitializedWithContext = false
-    private var viewModelRepeatAlertJob: Job? = null
-    private var periodicMaintenanceJob: Job? = null
 
-    private var lastFuelTrackLat: Double? = null
-    private var lastFuelTrackLng: Double? = null
+    private var viewModelRepeatAlertJob: Job? = null
+    private var sessionTickerJob: Job? = null
+    private var lastGpsTrackLat: Double? = null
+    private var lastGpsTrackLng: Double? = null
 
     init {
         viewModelScope.launch {
@@ -153,6 +186,24 @@ class FixPointViewModel : ViewModel() {
                 }
             }
         }
+        viewModelScope.launch {
+            ScreenReaderRuntimeBus.state.collectLatest { srState ->
+                _uiState.update { it.copy(screenReaderState = srState) }
+            }
+        }
+        viewModelScope.launch {
+            ScreenReaderRuntimeBus.statusMessageTh.collectLatest { msg ->
+                if (msg != null) {
+                    _uiState.update { it.copy(statusBannerMessageTh = msg) }
+                    ScreenReaderRuntimeBus.clearMessage()
+                }
+            }
+        }
+        viewModelScope.launch {
+            ScreenReaderRuntimeBus.capturedBitmaps.collect { bitmap ->
+                processOrderBitmap(bitmap, OrderInputSource.SCREEN_READER)
+            }
+        }
     }
 
     fun initialize(context: Context) {
@@ -163,158 +214,117 @@ class FixPointViewModel : ViewModel() {
         if (isInitializedWithContext) return
         isInitializedWithContext = true
 
-        val sharedPrefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs = sharedPrefs
-
-        val savedLockEnabled = sharedPrefs.getBoolean(KEY_LOCK_ENABLED, false)
-        val unitName = sharedPrefs.getString(KEY_MEASUREMENT_UNIT, MeasurementUnit.METRIC.name)
-        val freqName = sharedPrefs.getString(KEY_UPDATE_FREQUENCY, UpdateFrequency.STANDARD.name)
-        val coordName = sharedPrefs.getString(KEY_COORDINATE_FORMAT, CoordinateFormat.DECIMAL.name)
-        val keepScreen = sharedPrefs.getBoolean(KEY_KEEP_SCREEN_ON, true)
-        val savedItemsRaw = sharedPrefs.getString(KEY_SAVED_LOCATIONS, null)
-        val savedActivePinId = sharedPrefs.getString(KEY_ACTIVE_PIN_ID, null)
-        val savedRadiusKm = sharedPrefs.getFloat(KEY_ZONE_RADIUS_KM, 5.0f).coerceIn(0.0f, 30.0f)
-        val savedBufferMeters = sharedPrefs.getInt(KEY_GPS_BUFFER_METERS, 20).coerceIn(0, 100)
-        val savedVib = sharedPrefs.getBoolean(KEY_ALERT_VIBRATION, true)
-        val savedSound = sharedPrefs.getBoolean(KEY_ALERT_SOUND, true)
-        val savedToneName = sharedPrefs.getString(KEY_ALERT_TONE, ZoneAlertTone.SIREN_DUAL.name)
-        val savedVolume = sharedPrefs.getInt(KEY_ALERT_VOLUME, 85).coerceIn(0, 100)
-
-        // Load Feature 2: Delivery Stops
-        val savedStops = DeliveryStopItem.deserializeList(sharedPrefs.getString(KEY_DELIVERY_STOPS, null))
-        val routeCalc = RouteOptimizer.recalculateCurrentOrderDistances(null, null, savedStops)
-
-        // Load Feature 3: Daily Break-Even
-        val todayKey = DailyBreakEvenState.todayDateKey()
-        val storedDateKey = sharedPrefs.getString(KEY_BREAKEVEN_DATE, todayKey) ?: todayKey
-        val dailyFuelCost = sharedPrefs.getFloat(KEY_DAILY_FUEL_COST, 0f).toDouble()
-        var customExpenses = CustomExpenseItem.deserializeList(sharedPrefs.getString(KEY_CUSTOM_EXPENSES, null))
-        var jobIncomes = JobIncomeEntry.deserializeList(sharedPrefs.getString(KEY_JOB_INCOMES, null))
-        var historyList = DailyFinancialHistoryItem.deserializeList(sharedPrefs.getString(KEY_FINANCIAL_HISTORY, null))
-
-        if (storedDateKey != todayKey) {
-            val prevTotalCost = dailyFuelCost + customExpenses.sumOf { it.amountBaht }
-            val prevTotalIncome = jobIncomes.sumOf { it.amountBaht }
-            if (prevTotalCost > 0.0 || prevTotalIncome > 0.0) {
-                val archived = DailyFinancialHistoryItem(
-                    dateKey = storedDateKey,
-                    totalCostBaht = prevTotalCost,
-                    totalIncomeBaht = prevTotalIncome,
-                    jobCount = jobIncomes.size
-                )
-                historyList = (listOf(archived) + historyList).take(30)
-            }
-            customExpenses = emptyList()
-            jobIncomes = emptyList()
-            sharedPrefs.edit()
-                .putString(KEY_BREAKEVEN_DATE, todayKey)
-                .putString(KEY_CUSTOM_EXPENSES, "")
-                .putString(KEY_JOB_INCOMES, "")
-                .putString(KEY_FINANCIAL_HISTORY, DailyFinancialHistoryItem.serializeList(historyList))
-                .apply()
-        }
-
-        val initialBreakEven = DailyBreakEvenState(
-            currentDateKey = todayKey,
-            fuelCostBaht = dailyFuelCost,
-            customExpenses = customExpenses,
-            jobIncomes = jobIncomes,
-            history = historyList
-        )
-
-        // Load Feature 4: Fuel Estimator
-        val tankCap = sharedPrefs.getFloat(KEY_FUEL_TANK_LITERS, 5.5f).coerceAtLeast(0.5f)
-        val consumption = sharedPrefs.getFloat(KEY_FUEL_KM_PER_LITER, 38.0f).coerceAtLeast(1.0f)
-        val distSinceRefuel = sharedPrefs.getFloat(KEY_FUEL_DIST_DRIVEN_KM, 0f).toDouble().coerceAtLeast(0.0)
-        val lowFuelWarn = sharedPrefs.getFloat(KEY_FUEL_LOW_WARN_LITERS, 1.0f).coerceAtLeast(0.2f)
-        val initialFuelState = FuelEstimateState(
-            tankCapacityLiters = tankCap,
-            consumptionKmPerLiter = consumption,
-            distanceDrivenSinceRefuelKm = distSinceRefuel,
-            lowFuelWarningLiters = lowFuelWarn,
-            lowFuelAlertTriggered = false
-        )
-
-        // Load Feature 5: Saved POIs & Overpass 24h Cache
-        val savedPoisList = StopPoiItem.deserializeList(sharedPrefs.getString(KEY_SAVED_POIS, null))
-        val cachedOverpassAt = sharedPrefs.getLong(KEY_OVERPASS_CACHE_TS, 0L)
-        val isCacheFresh = (System.currentTimeMillis() - cachedOverpassAt) < 24 * 60 * 60 * 1000L
-        val cachedOverpassList = if (isCacheFresh) {
-            StopPoiItem.deserializeList(sharedPrefs.getString(KEY_OVERPASS_CACHE_ITEMS, null))
-        } else {
-            emptyList()
-        }
-        val cachedSearchLat = sharedPrefs.getString(KEY_OVERPASS_LAST_LAT, null)?.toDoubleOrNull()
-        val cachedSearchLng = sharedPrefs.getString(KEY_OVERPASS_LAST_LNG, null)?.toDoubleOrNull()
-        val savedOverpassRadiusKm = sharedPrefs.getInt(KEY_OVERPASS_RADIUS_KM, 5).let {
-            if (it in listOf(2, 5, 10)) it else 5
-        }
-
-        // Load Feature 6: Rain Forecast Settings
-        val rainEnabled = sharedPrefs.getBoolean(KEY_RAIN_ALERT_ENABLED, true)
-        val rainLeadName = sharedPrefs.getString(KEY_RAIN_LEAD_OPTION, RainLeadTimeOption.MIN_30.name)
-        val rainLead = runCatching { RainLeadTimeOption.valueOf(rainLeadName ?: "") }
-            .getOrDefault(RainLeadTimeOption.MIN_30)
-        val rainProbThreshold = sharedPrefs.getInt(KEY_RAIN_PROB_THRESHOLD, 50).coerceIn(10, 95)
-
-        val unit = runCatching { MeasurementUnit.valueOf(unitName ?: "") }.getOrDefault(MeasurementUnit.METRIC)
-        val freq = runCatching { UpdateFrequency.valueOf(freqName ?: "") }.getOrDefault(UpdateFrequency.STANDARD)
-        val coordFmt = runCatching { CoordinateFormat.valueOf(coordName ?: "") }.getOrDefault(CoordinateFormat.DECIMAL)
-        val tone = runCatching { ZoneAlertTone.valueOf(savedToneName ?: "") }.getOrDefault(ZoneAlertTone.SIREN_DUAL)
-        val savedItems = SavedLocationItem.deserializeList(savedItemsRaw)
-        val resolvedActiveId = savedActivePinId?.takeIf { id -> savedItems.any { it.id == id } }
-            ?: savedItems.firstOrNull()?.id
-
-        _uiState.update { state ->
-            state.copy(
-                measurementUnit = unit,
-                updateFrequency = freq,
-                coordinateFormat = coordFmt,
-                keepScreenOn = keepScreen,
-                savedLocations = savedItems,
-                activePinId = resolvedActiveId,
-                zoneRadiusKm = savedRadiusKm,
-                gpsBufferMeters = savedBufferMeters,
-                alertVibrationEnabled = savedVib,
-                alertSoundEnabled = savedSound,
-                alertTone = tone,
-                alertVolumePercent = savedVolume,
-                deliveryStops = routeCalc.orderedStops,
-                totalDeliveryRouteKm = routeCalc.totalPendingDistanceKm,
-                breakEvenState = initialBreakEven,
-                fuelState = initialFuelState,
-                savedPois = savedPoisList,
-                nearbyOverpassFuelPois = cachedOverpassList,
-                overpassSearchRadiusKm = savedOverpassRadiusKm,
-                overpassCacheTimestampMillis = if (isCacheFresh) cachedOverpassAt else 0L,
-                overpassLastSearchLat = cachedSearchLat,
-                overpassLastSearchLng = cachedSearchLng,
-                rainForecast = RainForecastState(
-                    alertEnabled = rainEnabled,
-                    leadTimeOption = rainLead,
-                    probabilityThresholdPercent = rainProbThreshold
-                ),
-                zoneStatus = if (resolvedActiveId != null) ZoneMonitorStatus.WAITING_FOR_GPS else ZoneMonitorStatus.NO_ACTIVE_PIN
-            )
-        }
-        syncZoneConfigToBus()
-        startPeriodicMaintenanceLoop()
+        val repo = FixPointRepository(appContext)
+        repository = repo
+        DailyMaintenanceWorker.schedule(appContext)
 
         val service = LocationService(appContext)
         locationService = service
 
+        // One-time safe migration from legacy v1.0.1 SharedPreferences into Room + DataStore
         viewModelScope.launch {
-            service.compassAzimuthDeg.collectLatest { azimuth ->
-                if (_uiState.value.isLockEnabled && azimuth != null) {
-                    _uiState.update { s ->
-                        s.copy(
-                            telemetry = s.telemetry.copy(compassAzimuthDegrees = azimuth)
-                        )
-                    }
+            val migrated = runCatching { repo.migrateLegacySharedPrefsIfNeeded() }.getOrDefault(false)
+            val snap = runCatching { repo.preferencesStore.getSnapshot() }.getOrNull()
+            if (snap != null) {
+                applyStoredPreferences(snap)
+                if (snap.lockEnabled && _uiState.value.hasAnyLocationPermission) {
+                    startGpsLockEngine(appContext)
+                }
+            }
+            if (migrated) {
+                _uiState.update {
+                    it.copy(statusBannerMessageTh = "โอนย้ายข้อมูลเดิมสู่ฐานข้อมูล Room 2.0 เรียบร้อยแล้ว")
                 }
             }
         }
 
+        // Reactive Room & DataStore observers
+        viewModelScope.launch {
+            repo.preferencesFlow.collectLatest { prefs ->
+                applyStoredPreferences(prefs)
+            }
+        }
+        viewModelScope.launch {
+            repo.savedPinsFlow.collectLatest { pins ->
+                _uiState.update { state ->
+                    val resolvedActiveId = state.activePinId?.takeIf { id -> pins.any { it.id == id } }
+                        ?: pins.firstOrNull()?.id
+                    state.copy(
+                        savedLocations = pins,
+                        activePinId = resolvedActiveId,
+                        zoneStatus = when {
+                            resolvedActiveId == null -> ZoneMonitorStatus.NO_ACTIVE_PIN
+                            state.telemetry.latitude == null -> ZoneMonitorStatus.WAITING_FOR_GPS
+                            else -> state.zoneStatus
+                        }
+                    )
+                }
+                syncZoneConfigToBus()
+                recalculateZoneEvaluation(triggerAlertsOnTransition = false)
+            }
+        }
+        viewModelScope.launch {
+            repo.transactionsFlow.collectLatest { txns ->
+                val todayKey = DailyBreakEvenState.todayDateKey()
+                val todayTxns = txns.filter { it.dateKey == todayKey }
+                val todayFuel = todayTxns
+                    .filter { it.type == EarningsRecordType.EXPENSE && it.category.contains("น้ำมัน") }
+                    .sumOf { it.amountBaht }
+                val todayOtherExp = todayTxns
+                    .filter { it.type == EarningsRecordType.EXPENSE && !it.category.contains("น้ำมัน") }
+                    .map { CustomExpenseItem(id = it.id, title = it.title, amountBaht = it.amountBaht) }
+                val todayJobs = todayTxns
+                    .filter { it.type == EarningsRecordType.INCOME }
+                    .map { JobIncomeEntry(id = it.id, label = it.title, amountBaht = it.amountBaht, timestampMillis = it.timestampMillis) }
+                _uiState.update { state ->
+                    state.copy(
+                        smartEarningsState = state.smartEarningsState.copy(transactions = txns),
+                        breakEvenState = state.breakEvenState.copy(
+                            currentDateKey = todayKey,
+                            fuelCostBaht = todayFuel,
+                            customExpenses = todayOtherExp,
+                            jobIncomes = todayJobs
+                        )
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            repo.dailyMetricsFlow.collectLatest { metricsMap ->
+                _uiState.update { state ->
+                    state.copy(
+                        smartEarningsState = state.smartEarningsState.copy(dailyWorkMetrics = metricsMap)
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            repo.workSessionsFlow.collectLatest { sessions ->
+                _uiState.update { it.copy(workSessions = sessions) }
+                if (sessions.any { it.isActive }) {
+                    ensureSessionTickerRunning()
+                } else {
+                    sessionTickerJob?.cancel()
+                    sessionTickerJob = null
+                }
+            }
+        }
+        viewModelScope.launch {
+            repo.analyzedOrdersFlow.collectLatest { orders ->
+                _uiState.update { it.copy(analyzedOrders = orders) }
+            }
+        }
+
+        // Hardware compass & GNSS satellites
+        viewModelScope.launch {
+            service.compassAzimuthDeg.collectLatest { azimuth ->
+                if (_uiState.value.isLockEnabled && azimuth != null) {
+                    _uiState.update { s ->
+                        s.copy(telemetry = s.telemetry.copy(compassAzimuthDegrees = azimuth))
+                    }
+                }
+            }
+        }
         viewModelScope.launch {
             service.gnssSatellites.collectLatest { (used, visible, bars) ->
                 if (_uiState.value.isLockEnabled) {
@@ -322,73 +332,47 @@ class FixPointViewModel : ViewModel() {
                 }
             }
         }
-
-        if (savedLockEnabled && _uiState.value.hasAnyLocationPermission) {
-            startGpsLockEngine(appContext)
-        } else if (savedLockEnabled && !_uiState.value.hasAnyLocationPermission) {
-            _uiState.update {
-                it.copy(
-                    isLockEnabled = false,
-                    lockState = GpsLockState.OFF
-                )
-            }
-        }
     }
 
-    private fun startPeriodicMaintenanceLoop() {
-        periodicMaintenanceJob?.cancel()
-        periodicMaintenanceJob = viewModelScope.launch {
-            while (isActive) {
-                delay(60_000L)
-                checkMidnightBreakEvenReset()
-                val lat = _uiState.value.telemetry.latitude
-                val lng = _uiState.value.telemetry.longitude
-                if (lat != null && lng != null) {
-                    val lastFetch = _uiState.value.rainForecast.lastUpdatedEpochMillis ?: 0L
-                    if (System.currentTimeMillis() - lastFetch >= 10 * 60 * 1000L) {
-                        refreshRainForecast(force = false)
-                    }
-                }
-            }
-        }
-    }
-
-    fun checkMidnightBreakEvenReset(nowMillis: Long = System.currentTimeMillis()) {
-        val todayKey = DailyBreakEvenState.todayDateKey(nowMillis)
-        val current = _uiState.value.breakEvenState
-        if (current.currentDateKey != todayKey) {
-            val prevCost = current.totalCostBaht
-            val prevIncome = current.totalIncomeBaht
-            val newHistory = if (prevCost > 0.0 || prevIncome > 0.0) {
-                val item = DailyFinancialHistoryItem(
-                    dateKey = current.currentDateKey,
-                    totalCostBaht = prevCost,
-                    totalIncomeBaht = prevIncome,
-                    jobCount = current.jobIncomes.size
-                )
-                (listOf(item) + current.history).take(30)
-            } else {
-                current.history
-            }
-            val updated = current.copy(
-                currentDateKey = todayKey,
-                customExpenses = emptyList(),
-                jobIncomes = emptyList(),
-                history = newHistory
+    private fun applyStoredPreferences(prefs: StoredRiderPreferences) {
+        _uiState.update { state ->
+            val resolvedActiveId = prefs.activePinId
+                ?.takeIf { id -> state.savedLocations.isEmpty() || state.savedLocations.any { it.id == id } }
+                ?: state.activePinId
+            state.copy(
+                riderProfile = prefs.profile,
+                privacyPreferences = prefs.privacy,
+                fuelState = prefs.fuel.copy(lowFuelAlertTriggered = state.fuelState.lowFuelAlertTriggered),
+                smartEarningsState = state.smartEarningsState.copy(goals = prefs.goals),
+                activePinId = resolvedActiveId,
+                zoneRadiusKm = prefs.zoneRadiusKm,
+                gpsBufferMeters = prefs.gpsBufferMeters,
+                alertVibrationEnabled = prefs.alertVibrationEnabled,
+                measurementUnit = prefs.measurementUnit,
+                updateFrequency = prefs.updateFrequency,
+                coordinateFormat = prefs.coordinateFormat,
+                keepScreenOn = prefs.keepScreenOn
             )
-            prefs?.edit()
-                ?.putString(KEY_BREAKEVEN_DATE, todayKey)
-                ?.putString(KEY_CUSTOM_EXPENSES, "")
-                ?.putString(KEY_JOB_INCOMES, "")
-                ?.putString(KEY_FINANCIAL_HISTORY, DailyFinancialHistoryItem.serializeList(newHistory))
-                ?.apply()
-            _uiState.update {
-                it.copy(
-                    breakEvenState = updated,
-                    statusBannerMessageTh = "รีเซ็ตยอดคุ้มทุนรายวันสำหรับวันใหม่ ($todayKey) และบันทึกประวัติแล้ว"
-                )
+        }
+        syncZoneConfigToBus()
+    }
+
+    private fun ensureSessionTickerRunning() {
+        if (sessionTickerJob?.isActive == true) return
+        sessionTickerJob = viewModelScope.launch {
+            while (isActive) {
+                delay(30_000L)
+                _uiState.update { it.copy(sessionClockTickMillis = System.currentTimeMillis()) }
             }
         }
+    }
+
+    // =========================================================================
+    // Navigation & Permissions
+    // =========================================================================
+
+    fun selectScreen(screen: AppScreen) {
+        _uiState.update { it.copy(currentScreen = screen) }
     }
 
     fun refreshPermissionFlags(context: Context) {
@@ -439,16 +423,16 @@ class FixPointViewModel : ViewModel() {
         }
     }
 
-    fun onBatteryExemptionResult(context: Context) {
+    fun onPermissionResult(context: Context, granted: Boolean, startLockIfGranted: Boolean) {
         refreshPermissionFlags(context)
-        if (_uiState.value.isIgnoringBatteryOptimizations) {
-            _uiState.update {
-                it.copy(statusBannerMessageTh = "อนุญาตการข้ามประหยัดแบตเตอรี่เรียบร้อยแล้ว")
-            }
+        if (granted) {
+            _uiState.update { it.copy(permissionDeniedMessageTh = null) }
+            if (startLockIfGranted) startGpsLockEngine(context)
         } else {
+            stopGpsLockEngine(context)
             _uiState.update {
                 it.copy(
-                    statusBannerMessageTh = "ยังไม่ได้ยกเว้นการประหยัดแบตเตอรี่ ระบบอาจถูกจำกัดเมื่อปิดหน้าจอ"
+                    permissionDeniedMessageTh = "ไม่ได้รับสิทธิ์เข้าถึงตำแหน่ง กรุณาอนุญาตสิทธิ์ตำแหน่งแม่นยำเพื่อใช้งาน GPS และตรวจโซน"
                 )
             }
         }
@@ -456,43 +440,119 @@ class FixPointViewModel : ViewModel() {
 
     fun onBackgroundLocationResult(context: Context, granted: Boolean) {
         refreshPermissionFlags(context)
-        if (granted) {
-            _uiState.update {
+        _uiState.update {
+            if (granted) {
                 it.copy(statusBannerMessageTh = "อนุญาตสิทธิ์ตำแหน่งเบื้องหลังเรียบร้อยแล้ว")
-            }
-        } else {
-            _uiState.update {
+            } else {
                 it.copy(
-                    permissionDeniedMessageTh = "ไม่ได้รับสิทธิ์ตำแหน่งเบื้องหลัง กรุณาเลือก 'อนุญาตตลอดเวลา' ในการตั้งค่าเพื่อให้ตรวจโซนขณะปิดหน้าจอได้ต่อเนื่อง"
+                    permissionDeniedMessageTh = "ไม่ได้รับสิทธิ์ตำแหน่งเบื้องหลัง กรุณาเลือก 'อนุญาตตลอดเวลา' ในการตั้งค่า"
                 )
             }
         }
     }
 
-    fun selectScreen(screen: AppScreen) {
-        _uiState.update { it.copy(currentScreen = screen) }
-    }
-
-    fun setMapTapActionMode(mode: MapTapActionMode) {
-        _uiState.update { it.copy(mapTapActionMode = mode) }
-    }
-
-    fun onPermissionResult(context: Context, granted: Boolean, startLockIfGranted: Boolean) {
+    fun onBatteryExemptionResult(context: Context) {
         refreshPermissionFlags(context)
-        if (granted) {
-            _uiState.update { it.copy(permissionDeniedMessageTh = null) }
-            if (startLockIfGranted) {
-                startGpsLockEngine(context)
-            }
-        } else {
-            stopGpsLockEngine(context)
-            _uiState.update {
-                it.copy(
-                    permissionDeniedMessageTh = "ไม่ได้รับสิทธิ์การเข้าถึงตำแหน่ง กรุณาอนุญาตสิทธิ์ตำแหน่งแม่นยำเพื่อเริ่มล็อกสัญญาณและตรวจโซน"
-                )
-            }
+        _uiState.update {
+            it.copy(
+                statusBannerMessageTh = if (it.isIgnoringBatteryOptimizations) {
+                    "อนุญาตการข้ามประหยัดแบตเตอรี่เรียบร้อยแล้ว"
+                } else {
+                    "ยังไม่ได้ยกเว้นการประหยัดแบตเตอรี่ ระบบอาจถูกจำกัดเมื่อปิดหน้าจอ"
+                }
+            )
         }
     }
+
+    // =========================================================================
+    // Work Session Management (Start / Stop Shift)
+    // =========================================================================
+
+    fun toggleWorkSession(context: Context) {
+        val active = _uiState.value.activeWorkSession
+        if (active != null) {
+            stopWorkSession()
+        } else {
+            startWorkSession(context)
+        }
+    }
+
+    fun startWorkSession(context: Context? = null) {
+        if (_uiState.value.activeWorkSession != null) return
+        val now = System.currentTimeMillis()
+        val todayKey = DailyBreakEvenState.todayDateKey(now)
+        val session = WorkSessionRecord(
+            id = "SES-$now-${UUID.randomUUID().toString().take(4)}",
+            dateKey = todayKey,
+            startTimeMillis = now,
+            endTimeMillis = null,
+            distanceKm = 0.0,
+            completedOrders = 0,
+            grossIncomeBaht = 0.0,
+            fuelCostBaht = 0.0,
+            isActive = true
+        )
+        _uiState.update {
+            it.copy(
+                workSessions = listOf(session) + it.workSessions,
+                sessionClockTickMillis = now,
+                statusBannerMessageTh = "เริ่มรอบวิ่งงานแล้ว ระบบพร้อมติดตามระยะทาง เวลา และรายได้"
+            )
+        }
+        ensureSessionTickerRunning()
+        viewModelScope.launch {
+            repository?.upsertWorkSession(session)
+        }
+        if (context != null && _uiState.value.hasAnyLocationPermission && !_uiState.value.isLockEnabled) {
+            startGpsLockEngine(context)
+        }
+    }
+
+    fun stopWorkSession() {
+        val active = _uiState.value.activeWorkSession ?: return
+        val now = System.currentTimeMillis()
+        val durationMins = active.durationMinutes(now).coerceAtLeast(1)
+        val finished = active.copy(
+            endTimeMillis = now,
+            isActive = false
+        )
+        val updatedSessions = _uiState.value.workSessions.map {
+            if (it.id == active.id) finished else it
+        }
+        val dayKey = active.dateKey
+        val existingMetric = _uiState.value.smartEarningsState.dailyWorkMetrics[dayKey]
+            ?: DailyWorkMetrics(dateKey = dayKey)
+        val updatedMetric = existingMetric.copy(
+            workMinutes = existingMetric.workMinutes + durationMins,
+            gpsDistanceKm = max(existingMetric.gpsDistanceKm, existingMetric.gpsDistanceKm)
+        )
+        val updatedMetricsMap = _uiState.value.smartEarningsState.dailyWorkMetrics.toMutableMap().apply {
+            put(dayKey, updatedMetric)
+        }
+        sessionTickerJob?.cancel()
+        sessionTickerJob = null
+        _uiState.update {
+            it.copy(
+                workSessions = updatedSessions,
+                smartEarningsState = it.smartEarningsState.copy(dailyWorkMetrics = updatedMetricsMap),
+                statusBannerMessageTh = String.format(
+                    Locale.US,
+                    "ปิดรอบงานแล้ว (%d นาที • %d ออเดอร์ • ฿%.0f)",
+                    durationMins,
+                    finished.completedOrders,
+                    finished.grossIncomeBaht
+                )
+            )
+        }
+        viewModelScope.launch {
+            repository?.upsertWorkSession(finished)
+            repository?.upsertDailyMetric(updatedMetric)
+        }
+    }
+
+    // =========================================================================
+    // GPS Lock Engine & Zone Monitoring (Preserved 100%)
+    // =========================================================================
 
     fun toggleMainPowerLock(context: Context): Boolean {
         refreshPermissionFlags(context)
@@ -516,14 +576,11 @@ class FixPointViewModel : ViewModel() {
         refreshPermissionFlags(appContext)
         if (!_uiState.value.hasAnyLocationPermission) {
             _uiState.update {
-                it.copy(
-                    permissionDeniedMessageTh = "จำเป็นต้องได้รับสิทธิ์ตำแหน่งก่อนเริ่มล็อกสัญญาณ GPS"
-                )
+                it.copy(permissionDeniedMessageTh = "จำเป็นต้องได้รับสิทธิ์ตำแหน่งก่อนเริ่มล็อกสัญญาณ GPS")
             }
             return
         }
 
-        prefs?.edit()?.putBoolean(KEY_LOCK_ENABLED, true)?.apply()
         val freq = _uiState.value.updateFrequency
         syncZoneConfigToBus()
 
@@ -533,14 +590,10 @@ class FixPointViewModel : ViewModel() {
                 isLockEnabled = true,
                 lockState = nextLockState,
                 permissionDeniedMessageTh = null,
-                statusBannerMessageTh = "เริ่มทำงานระบบล็อกสัญญาณและตรวจโซนรับงานเบื้องหลังแล้ว"
+                statusBannerMessageTh = "เริ่มทำงานระบบล็อกสัญญาณและตรวจโซนรับงานแล้ว"
             )
         }
-
-        TacticalSoundEngine.playLockChime(
-            isMuted = !_uiState.value.alertSoundEnabled,
-            volumePercent = _uiState.value.alertVolumePercent
-        )
+        persistTelemetryPrefs()
 
         try {
             val serviceIntent = Intent(appContext, GpsKeepAliveService::class.java).apply {
@@ -561,10 +614,9 @@ class FixPointViewModel : ViewModel() {
 
     fun stopGpsLockEngine(context: Context) {
         val appContext = context.applicationContext
-        prefs?.edit()?.putBoolean(KEY_LOCK_ENABLED, false)?.apply()
         stopViewModelRepeatAlertLoop()
-        lastFuelTrackLat = null
-        lastFuelTrackLng = null
+        lastGpsTrackLat = null
+        lastGpsTrackLng = null
 
         try {
             locationService?.stopLocationUpdates()
@@ -590,18 +642,17 @@ class FixPointViewModel : ViewModel() {
                 statusBannerMessageTh = "หยุดการทำงานและปล่อยทรัพยากร GPS เรียบร้อยแล้ว"
             )
         }
+        persistTelemetryPrefs()
+    }
+
+    fun onHardwareSensorFixReceived(location: Location) {
+        _uiState.update { it.copy(isLockEnabled = true) }
+        applyHardwareLocation(location)
     }
 
     private fun applySmoothedLocation(update: SmoothedLocationUpdate) {
         _uiState.update { state ->
             if (!state.isLockEnabled) return@update state
-            val wasSearching = state.lockState != GpsLockState.LOCKED
-            if (wasSearching) {
-                TacticalSoundEngine.playSRankMatchBeep(
-                    isMuted = !state.alertSoundEnabled,
-                    volumePercent = state.alertVolumePercent
-                )
-            }
             state.copy(
                 lockState = GpsLockState.LOCKED,
                 telemetry = state.telemetry.copy(
@@ -650,27 +701,45 @@ class FixPointViewModel : ViewModel() {
 
     private fun onNewGpsPositionEvaluated(lat: Double, lng: Double) {
         recalculateZoneEvaluation(triggerAlertsOnTransition = true)
-        accumulateRealGpsDistanceForFuel(lat, lng)
-        recalculateDeliveryStopDistancesFromGps(lat, lng)
-        checkWeatherAndOverpassMovementTriggers(lat, lng)
+        accumulateRealGpsDistance(lat, lng)
     }
 
-    private fun accumulateRealGpsDistanceForFuel(lat: Double, lng: Double) {
-        val prevLat = lastFuelTrackLat
-        val prevLng = lastFuelTrackLng
-        lastFuelTrackLat = lat
-        lastFuelTrackLng = lng
+    private fun accumulateRealGpsDistance(lat: Double, lng: Double) {
+        val prevLat = lastGpsTrackLat
+        val prevLng = lastGpsTrackLng
+        lastGpsTrackLat = lat
+        lastGpsTrackLng = lng
         if (prevLat == null || prevLng == null) return
 
         val stepKm = GeoMath.haversineKm(prevLat, prevLng, lat, lng)
-        // Accumulate genuine movement steps between 2 meters and 5 km
         if (stepKm in 0.002..5.0) {
-            val currentFuel = _uiState.value.fuelState
+            val state = _uiState.value
+            val currentFuel = state.fuelState
             val newDistKm = currentFuel.distanceDrivenSinceRefuelKm + stepKm
             val updatedFuel = currentFuel.copy(distanceDrivenSinceRefuelKm = newDistKm)
-            prefs?.edit()?.putFloat(KEY_FUEL_DIST_DRIVEN_KM, newDistKm.toFloat())?.apply()
+            val todayKey = DailyBreakEvenState.todayDateKey()
+            val currentDayMetric = state.smartEarningsState.dailyWorkMetrics[todayKey]
+                ?: DailyWorkMetrics(dateKey = todayKey)
+            val updatedDayMetric = currentDayMetric.copy(gpsDistanceKm = currentDayMetric.gpsDistanceKm + stepKm)
+            val updatedMetricsMap = state.smartEarningsState.dailyWorkMetrics.toMutableMap().apply {
+                put(todayKey, updatedDayMetric)
+            }
 
-            val shouldTriggerLowFuelAlert = updatedFuel.isLowFuel && !currentFuel.lowFuelAlertTriggered
+            // Also update active work session distance if running
+            val activeSession = state.activeWorkSession
+            val updatedActiveSession = activeSession?.copy(
+                distanceKm = activeSession.distanceKm + stepKm,
+                fuelCostBaht = activeSession.fuelCostBaht +
+                    (stepKm / currentFuel.consumptionKmPerLiter.coerceAtLeast(1f)) * state.riderProfile.fuelPricePerLiterBaht
+            )
+            val updatedSessions = if (updatedActiveSession != null) {
+                state.workSessions.map { if (it.id == updatedActiveSession.id) updatedActiveSession else it }
+            } else {
+                state.workSessions
+            }
+
+            val shouldTriggerLowFuelAlert = state.privacyPreferences.lowFuelAlertEnabled &&
+                updatedFuel.isLowFuel && !currentFuel.lowFuelAlertTriggered
             val finalFuel = if (shouldTriggerLowFuelAlert) {
                 updatedFuel.copy(lowFuelAlertTriggered = true)
             } else {
@@ -680,10 +749,12 @@ class FixPointViewModel : ViewModel() {
             _uiState.update {
                 it.copy(
                     fuelState = finalFuel,
+                    workSessions = updatedSessions,
+                    smartEarningsState = it.smartEarningsState.copy(dailyWorkMetrics = updatedMetricsMap),
                     statusBannerMessageTh = if (shouldTriggerLowFuelAlert) {
                         String.format(
                             Locale.US,
-                            "แจ้งเตือนน้ำมันใกล้หมด: เหลือประมาณ %.2f ลิตร (วิ่งได้อีก ~%.1f กม.)",
+                            "แจ้งเตือนน้ำมันใกล้หมด: เหลือ ~%.2f ลิตร (วิ่งได้อีก ~%.0f กม.)",
                             finalFuel.remainingLiters,
                             finalFuel.estimatedRemainingRangeKm
                         )
@@ -693,67 +764,24 @@ class FixPointViewModel : ViewModel() {
                 )
             }
 
+            viewModelScope.launch {
+                repository?.preferencesStore?.updateFuel(finalFuel)
+                repository?.upsertDailyMetric(updatedDayMetric)
+                if (updatedActiveSession != null) {
+                    repository?.upsertWorkSession(updatedActiveSession)
+                }
+            }
+
             if (shouldTriggerLowFuelAlert) {
                 appContextRef?.let { ctx ->
-                    TacticalSoundEngine.triggerLowFuelWarning(
-                        context = ctx,
-                        vibrationEnabled = _uiState.value.alertVibrationEnabled,
-                        soundEnabled = _uiState.value.alertSoundEnabled,
-                        volumePercent = _uiState.value.alertVolumePercent
-                    )
+                    TacticalSoundEngine.triggerLowFuelWarning(ctx, _uiState.value.alertVibrationEnabled)
                 }
             }
         }
     }
 
-    private fun recalculateDeliveryStopDistancesFromGps(lat: Double, lng: Double) {
-        val stops = _uiState.value.deliveryStops
-        if (stops.isEmpty()) return
-        val recalc = RouteOptimizer.recalculateCurrentOrderDistances(lat, lng, stops)
-        _uiState.update {
-            it.copy(
-                deliveryStops = recalc.orderedStops,
-                totalDeliveryRouteKm = recalc.totalPendingDistanceKm
-            )
-        }
-    }
-
-    private fun checkWeatherAndOverpassMovementTriggers(lat: Double, lng: Double) {
-        // Feature 6: Update rain forecast every 10 mins OR when location changes > 5 km
-        val rf = _uiState.value.rainForecast
-        val lastLat = rf.lastFetchedLat
-        val lastLng = rf.lastFetchedLng
-        val lastAt = rf.lastUpdatedEpochMillis ?: 0L
-        val now = System.currentTimeMillis()
-        val movedOver5Km = lastLat != null && lastLng != null &&
-            GeoMath.haversineKm(lastLat, lastLng, lat, lng) >= 5.0
-        val tenMinElapsed = now - lastAt >= 10 * 60 * 1000L
-
-        if ((lastAt == 0L || movedOver5Km || tenMinElapsed) && rf.status != WeatherForecastStatus.LOADING) {
-            refreshRainForecast(force = false)
-        }
-
-        // Feature 5: Re-query Overpass if user previously searched and moved > 2 km
-        val ovLat = _uiState.value.overpassLastSearchLat
-        val ovLng = _uiState.value.overpassLastSearchLng
-        if (ovLat != null && ovLng != null && !_uiState.value.isSearchingOverpass) {
-            val movedKm = GeoMath.haversineKm(ovLat, ovLng, lat, lng)
-            if (movedKm >= 2.0) {
-                searchNearbyFuelStations(forceRefresh = true)
-            }
-        }
-    }
-
-    private fun updateSatellitesInternal(
-        used: Int,
-        visible: Int,
-        bars: List<SatelliteBarItem>
-    ) {
-        val avgSnr = if (bars.isNotEmpty()) {
-            bars.map { it.cn0DbHz }.average().toFloat()
-        } else {
-            0f
-        }
+    private fun updateSatellitesInternal(used: Int, visible: Int, bars: List<SatelliteBarItem>) {
+        val avgSnr = if (bars.isNotEmpty()) bars.map { it.cn0DbHz }.average().toFloat() else 0f
         _uiState.update { state ->
             state.copy(
                 telemetry = state.telemetry.copy(
@@ -843,7 +871,6 @@ class FixPointViewModel : ViewModel() {
                     appContextRef?.let { ctx ->
                         TacticalSoundEngine.vibrateReturnToZoneSingleShort(ctx, state.alertVibrationEnabled)
                     }
-                    TacticalSoundEngine.playReturnToZoneChime(state.alertSoundEnabled, state.alertVolumePercent)
                 }
             }
         }
@@ -855,11 +882,6 @@ class FixPointViewModel : ViewModel() {
         appContextRef?.let { ctx ->
             TacticalSoundEngine.vibrateOutOfZone(ctx, s.alertVibrationEnabled)
         }
-        TacticalSoundEngine.playZoneAlertTone(
-            soundEnabled = s.alertSoundEnabled,
-            tone = s.alertTone,
-            volumePercent = s.alertVolumePercent
-        )
     }
 
     private fun startViewModelRepeatAlertLoop() {
@@ -887,7 +909,7 @@ class FixPointViewModel : ViewModel() {
         _uiState.update {
             it.copy(
                 isZoneAlertMuted = true,
-                statusBannerMessageTh = "ปิดเสียงเตือนชั่วคราวแล้ว (จะรีเซ็ตเมื่อกลับเข้าโซน)"
+                statusBannerMessageTh = "หยุดการสั่นเตือนโซนชั่วคราวแล้ว (รีเซ็ตเมื่อกลับเข้าโซน)"
             )
         }
         val ctx = context?.applicationContext ?: appContextRef
@@ -909,371 +931,664 @@ class FixPointViewModel : ViewModel() {
                 radiusKm = s.zoneRadiusKm,
                 gpsBufferMeters = s.gpsBufferMeters,
                 alertVibrationEnabled = s.alertVibrationEnabled,
-                alertSoundEnabled = s.alertSoundEnabled,
-                alertTone = s.alertTone,
-                alertVolumePercent = s.alertVolumePercent,
-                isAlertMuted = s.isZoneAlertMuted,
-                rainAlertEnabled = s.rainForecast.alertEnabled,
-                rainLeadTimeMinutes = s.rainForecast.leadTimeOption.minutes,
-                rainProbabilityThresholdPercent = s.rainForecast.probabilityThresholdPercent
+                isAlertMuted = s.isZoneAlertMuted
             )
         )
     }
 
     // =========================================================================
-    // Feature 2: เรียงลำดับจุดส่งอัตโนมัติ (Delivery Stops & Route Optimizer)
+    // AI Rider Assistant: ML Kit OCR, Draft Editing, Analysis & Screen Reader
     // =========================================================================
 
-    fun addDeliveryStop(name: String, latitude: Double, longitude: Double): Boolean {
-        val current = _uiState.value.deliveryStops
-        if (current.size >= DeliveryStopItem.MAX_STOPS) {
-            _uiState.update {
-                it.copy(statusBannerMessageTh = "เพิ่มจุดส่งได้สูงสุด ${DeliveryStopItem.MAX_STOPS} จุด")
-            }
+    fun requestStartScreenReader(): Boolean {
+        if (!_uiState.value.privacyPreferences.screenReaderConsentAccepted) {
+            _uiState.update { it.copy(showScreenReaderConsentDialog = true) }
             return false
         }
-        val cleanName = name.trim().ifBlank { "จุดส่งที่ #${current.size + 1}" }
-        val newStop = DeliveryStopItem(
-            id = "STOP-${System.currentTimeMillis()}-${current.size + 1}",
-            name = cleanName,
-            latitude = latitude.coerceIn(-85.0, 85.0),
-            longitude = longitude.coerceIn(-180.0, 180.0),
-            isDelivered = false,
-            sequenceOrder = current.count { !it.isDelivered } + 1
-        )
-        val combined = current + newStop
-        val recalc = RouteOptimizer.recalculateCurrentOrderDistances(
-            _uiState.value.telemetry.latitude,
-            _uiState.value.telemetry.longitude,
-            combined
-        )
-        persistDeliveryStops(recalc.orderedStops)
-        _uiState.update {
-            it.copy(
-                deliveryStops = recalc.orderedStops,
-                totalDeliveryRouteKm = recalc.totalPendingDistanceKm,
-                statusBannerMessageTh = "เพิ่มจุดส่ง \"$cleanName\" เรียบร้อยแล้ว"
-            )
-        }
         return true
     }
 
-    fun addDeliveryStopFromCoordinatesText(rawCoordinateText: String, name: String): Boolean {
-        val parsed = GeoMath.parseCoordinateInput(rawCoordinateText) ?: return false
-        return addDeliveryStop(name, parsed.first, parsed.second)
+    fun dismissScreenReaderConsentDialog() {
+        _uiState.update { it.copy(showScreenReaderConsentDialog = false) }
     }
 
-    fun editDeliveryStop(id: String, newName: String, newLatitude: Double, newLongitude: Double): Boolean {
-        if (newLatitude !in -90.0..90.0 || newLongitude !in -180.0..180.0) return false
-        val updated = _uiState.value.deliveryStops.map { stop ->
-            if (stop.id == id) {
-                stop.copy(
-                    name = newName.trim().ifBlank { stop.name },
-                    latitude = newLatitude,
-                    longitude = newLongitude
-                )
-            } else {
-                stop
-            }
-        }
-        val recalc = RouteOptimizer.recalculateCurrentOrderDistances(
-            _uiState.value.telemetry.latitude,
-            _uiState.value.telemetry.longitude,
-            updated
-        )
-        persistDeliveryStops(recalc.orderedStops)
+    fun acceptScreenReaderConsent() {
+        val updated = _uiState.value.privacyPreferences.copy(screenReaderConsentAccepted = true)
         _uiState.update {
             it.copy(
-                deliveryStops = recalc.orderedStops,
-                totalDeliveryRouteKm = recalc.totalPendingDistanceKm,
-                statusBannerMessageTh = "แก้ไขข้อมูลจุดส่งเรียบร้อยแล้ว"
+                privacyPreferences = updated,
+                showScreenReaderConsentDialog = false
             )
         }
-        return true
-    }
-
-    fun toggleDeliveryStopDelivered(id: String) {
-        val updated = _uiState.value.deliveryStops.map { stop ->
-            if (stop.id == id) stop.copy(isDelivered = !stop.isDelivered) else stop
-        }
-        val recalc = RouteOptimizer.recalculateCurrentOrderDistances(
-            _uiState.value.telemetry.latitude,
-            _uiState.value.telemetry.longitude,
-            updated
-        )
-        persistDeliveryStops(recalc.orderedStops)
-        _uiState.update {
-            it.copy(
-                deliveryStops = recalc.orderedStops,
-                totalDeliveryRouteKm = recalc.totalPendingDistanceKm
-            )
+        viewModelScope.launch {
+            repository?.preferencesStore?.updatePrivacy(updated)
         }
     }
 
-    fun deleteDeliveryStop(id: String) {
-        val updated = _uiState.value.deliveryStops.filterNot { it.id == id }
-        val recalc = RouteOptimizer.recalculateCurrentOrderDistances(
-            _uiState.value.telemetry.latitude,
-            _uiState.value.telemetry.longitude,
-            updated
-        )
-        persistDeliveryStops(recalc.orderedStops)
-        _uiState.update {
-            it.copy(
-                deliveryStops = recalc.orderedStops,
-                totalDeliveryRouteKm = recalc.totalPendingDistanceKm,
-                statusBannerMessageTh = "ลบจุดส่งเรียบร้อยแล้ว"
+    fun onMediaProjectionPermissionResult(context: Context, resultCode: Int, data: Intent?) {
+        if (resultCode != Activity.RESULT_OK || data == null) {
+            ScreenReaderRuntimeBus.updateState(
+                ScreenReaderState.PERMISSION_DENIED,
+                "ไม่ได้รับสิทธิ์จับภาพหน้าจอ คุณยังสามารถนำเข้าภาพหน้าจอหรือกรอกข้อมูลเองได้"
             )
-        }
-    }
-
-    fun clearAllDeliveryStops() {
-        persistDeliveryStops(emptyList())
-        _uiState.update {
-            it.copy(
-                deliveryStops = emptyList(),
-                totalDeliveryRouteKm = 0.0,
-                statusBannerMessageTh = "ล้างรายการจุดส่งทั้งหมดแล้ว"
-            )
-        }
-    }
-
-    fun optimizeDeliveryRouteFromCurrentGps() {
-        val stops = _uiState.value.deliveryStops
-        if (stops.none { !it.isDelivered }) {
             _uiState.update {
-                it.copy(statusBannerMessageTh = "ไม่มีจุดส่งที่รอดำเนินการสำหรับการเรียงเส้นทาง")
+                it.copy(
+                    screenReaderState = ScreenReaderState.PERMISSION_DENIED,
+                    ocrErrorMessageTh = "ไม่ได้รับสิทธิ์จับภาพหน้าจอ — ใช้ปุ่มนำเข้าภาพหน้าจอ (Photo Picker) หรือกรอกข้อมูลแทนได้"
+                )
             }
             return
         }
-        val startLat = _uiState.value.telemetry.latitude
-            ?: _uiState.value.activePin?.latitude
-            ?: stops.first().latitude
-        val startLng = _uiState.value.telemetry.longitude
-            ?: _uiState.value.activePin?.longitude
-            ?: stops.first().longitude
+        val appContext = context.applicationContext
+        runCatching {
+            val intent = Intent(appContext, ScreenReaderCaptureService::class.java).apply {
+                action = ScreenReaderCaptureService.ACTION_START
+                putExtra(ScreenReaderCaptureService.EXTRA_RESULT_CODE, resultCode)
+                putExtra(ScreenReaderCaptureService.EXTRA_RESULT_DATA, data)
+            }
+            ContextCompat.startForegroundService(appContext, intent)
+        }.onFailure { err ->
+            _uiState.update {
+                it.copy(
+                    screenReaderState = ScreenReaderState.ERROR,
+                    ocrErrorMessageTh = "ไม่สามารถเริ่มบริการ Screen Reader ได้ (${err.localizedMessage ?: "ไม่รองรับ"})"
+                )
+            }
+        }
+    }
 
-        val result = RouteOptimizer.optimizeStops(startLat, startLng, stops)
-        persistDeliveryStops(result.orderedStops)
+    fun triggerScreenReaderCaptureNow(context: Context) {
+        if (_uiState.value.screenReaderState != ScreenReaderState.ACTIVE_READY) {
+            _uiState.update {
+                it.copy(statusBannerMessageTh = "กรุณาเปิดสิทธิ์ Screen Reader ก่อนกดจับภาพ")
+            }
+            return
+        }
+        runCatching {
+            val intent = Intent(context.applicationContext, ScreenReaderCaptureService::class.java).apply {
+                action = ScreenReaderCaptureService.ACTION_CAPTURE_NOW
+            }
+            context.applicationContext.startService(intent)
+        }
+    }
+
+    fun stopScreenReader(context: Context) {
+        runCatching {
+            val intent = Intent(context.applicationContext, ScreenReaderCaptureService::class.java).apply {
+                action = ScreenReaderCaptureService.ACTION_STOP
+            }
+            context.applicationContext.startService(intent)
+        }
+        ScreenReaderRuntimeBus.updateState(ScreenReaderState.IDLE)
         _uiState.update {
             it.copy(
-                deliveryStops = result.orderedStops,
-                totalDeliveryRouteKm = result.totalPendingDistanceKm,
-                statusBannerMessageTh = String.format(
-                    Locale.US,
-                    "เรียงเส้นทางอัตโนมัติสำเร็จ (ระยะรวมโดยประมาณ %.2f กม.)",
-                    result.totalPendingDistanceKm
-                )
+                screenReaderState = ScreenReaderState.IDLE,
+                statusBannerMessageTh = "ปิดการทำงาน Screen Reader เรียบร้อยแล้ว"
             )
         }
     }
 
-    private fun persistDeliveryStops(stops: List<DeliveryStopItem>) {
-        prefs?.edit()?.putString(KEY_DELIVERY_STOPS, DeliveryStopItem.serializeList(stops))?.apply()
-    }
-
-    // =========================================================================
-    // Feature 3: คำนวณจุดคุ้มทุนรายวัน (Daily Break-Even & Profit)
-    // =========================================================================
-
-    fun updateFixedDailyCosts(fuelCostBaht: Double) {
-        checkMidnightBreakEvenReset()
-        val safeFuel = fuelCostBaht.coerceAtLeast(0.0)
-        prefs?.edit()
-            ?.putFloat(KEY_DAILY_FUEL_COST, safeFuel.toFloat())
-            ?.apply()
-        _uiState.update { state ->
-            state.copy(
-                breakEvenState = state.breakEvenState.copy(
-                    fuelCostBaht = safeFuel
-                ),
-                statusBannerMessageTh = "บันทึกค่าน้ำมันรายวันเรียบร้อยแล้ว"
+    fun processOrderImageUri(
+        context: Context,
+        uri: Uri,
+        source: OrderInputSource = OrderInputSource.SCREENSHOT_IMPORT
+    ) {
+        _uiState.update {
+            it.copy(
+                isRunningOcr = true,
+                ocrErrorMessageTh = null,
+                currentScreen = AppScreen.AI_ASSISTANT
             )
+        }
+        viewModelScope.launch {
+            val outcome = MlKitOrderOcrEngine.recognizeImageUri(context.applicationContext, uri, source)
+            handleOcrOutcome(outcome)
         }
     }
 
-    fun addCustomExpense(title: String, amountBaht: Double): Boolean {
-        if (amountBaht <= 0.0) return false
-        checkMidnightBreakEvenReset()
-        val cleanTitle = title.trim().ifBlank { "ค่าใช้จ่ายอื่นๆ" }
-        val newItem = CustomExpenseItem(
-            id = "EXP-${System.currentTimeMillis()}",
-            title = cleanTitle,
-            amountBaht = amountBaht
-        )
-        val updatedList = _uiState.value.breakEvenState.customExpenses + newItem
-        prefs?.edit()?.putString(KEY_CUSTOM_EXPENSES, CustomExpenseItem.serializeList(updatedList))?.apply()
-        _uiState.update { state ->
-            state.copy(
-                breakEvenState = state.breakEvenState.copy(customExpenses = updatedList),
-                statusBannerMessageTh = "เพิ่มค่าใช้จ่าย \"$cleanTitle\" เรียบร้อยแล้ว"
-            )
-        }
-        return true
-    }
-
-    fun deleteCustomExpense(id: String) {
-        val updatedList = _uiState.value.breakEvenState.customExpenses.filterNot { it.id == id }
-        prefs?.edit()?.putString(KEY_CUSTOM_EXPENSES, CustomExpenseItem.serializeList(updatedList))?.apply()
-        _uiState.update { state ->
-            state.copy(
-                breakEvenState = state.breakEvenState.copy(customExpenses = updatedList)
-            )
+    fun processOrderBitmap(
+        bitmap: Bitmap,
+        source: OrderInputSource = OrderInputSource.SCREEN_READER
+    ) {
+        _uiState.update { it.copy(isRunningOcr = true, ocrErrorMessageTh = null) }
+        viewModelScope.launch {
+            try {
+                val outcome = MlKitOrderOcrEngine.recognizeBitmap(bitmap, source)
+                handleOcrOutcome(outcome)
+            } finally {
+                if (_uiState.value.privacyPreferences.autoDeleteScreenshots && !bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
+            }
         }
     }
 
-    fun addJobIncome(label: String, amountBaht: Double): Boolean {
-        if (amountBaht <= 0.0) return false
-        checkMidnightBreakEvenReset()
-        val currentJobs = _uiState.value.breakEvenState.jobIncomes
-        val cleanLabel = label.trim().ifBlank { "งานที่ #${currentJobs.size + 1}" }
-        val entry = JobIncomeEntry(
-            id = "JOB-${System.currentTimeMillis()}",
-            label = cleanLabel,
-            amountBaht = amountBaht,
-            timestampMillis = System.currentTimeMillis()
-        )
-        val updatedJobs = listOf(entry) + currentJobs
-        prefs?.edit()?.putString(KEY_JOB_INCOMES, JobIncomeEntry.serializeList(updatedJobs))?.apply()
-        _uiState.update { state ->
-            val nextBreakEven = state.breakEvenState.copy(jobIncomes = updatedJobs)
-            state.copy(
-                breakEvenState = nextBreakEven,
-                statusBannerMessageTh = if (nextBreakEven.hasReachedBreakEven) {
-                    String.format(Locale.US, "เริ่มมีกำไร! กำไรสุทธิวันนี้ +฿%.0f", nextBreakEven.netProfitBaht)
+    private fun handleOcrOutcome(outcome: OcrScanOutcome) {
+        when (outcome) {
+            is OcrScanOutcome.Success -> {
+                val cleanDraft = if (_uiState.value.privacyPreferences.storeRawOcrText) {
+                    outcome.draft
                 } else {
-                    String.format(Locale.US, "เพิ่มรายได้ +฿%.0f แล้ว", amountBaht)
+                    outcome.draft.copy(rawOcrText = "")
+                }
+                val analysis = RiderIntelligenceEngine.analyzeOrder(
+                    draft = cleanDraft,
+                    profile = _uiState.value.riderProfile,
+                    fuelState = _uiState.value.fuelState
+                )
+                _uiState.update {
+                    it.copy(
+                        isRunningOcr = false,
+                        currentOrderDraft = cleanDraft,
+                        currentOrderAnalysis = analysis,
+                        ocrErrorMessageTh = if (cleanDraft.missingFields.isNotEmpty()) {
+                            "ตรวจพบข้อมูลบางส่วน กรุณาตรวจสอบหรือกรอกช่องที่ขาด (${cleanDraft.missingFields.joinToString(", ")})"
+                        } else null,
+                        statusBannerMessageTh = "อ่านข้อความ OCR เสร็จสิ้น โปรดตรวจสอบความถูกต้องก่อนบันทึก"
+                    )
+                }
+            }
+            is OcrScanOutcome.ProtectedOrBlankScreen -> {
+                _uiState.update {
+                    it.copy(
+                        isRunningOcr = false,
+                        screenReaderState = ScreenReaderState.PROTECTED_SCREEN,
+                        ocrErrorMessageTh = outcome.messageTh
+                    )
+                }
+            }
+            is OcrScanOutcome.Failure -> {
+                _uiState.update {
+                    it.copy(
+                        isRunningOcr = false,
+                        ocrErrorMessageTh = outcome.reasonTh
+                    )
+                }
+            }
+        }
+    }
+
+    fun parseManualOrPastedOrderText(rawText: String) {
+        val draft = OrderOcrParser.parseOrderText(rawText, OrderInputSource.MANUAL_OR_TEXT)
+        val analysis = RiderIntelligenceEngine.analyzeOrder(
+            draft = draft,
+            profile = _uiState.value.riderProfile,
+            fuelState = _uiState.value.fuelState
+        )
+        _uiState.update {
+            it.copy(
+                currentOrderDraft = draft,
+                currentOrderAnalysis = analysis,
+                ocrErrorMessageTh = if (draft.payoutBaht == null && draft.distanceKm == null) {
+                    "ไม่พบตัวเลขรายได้หรือระยะทางในข้อความ กรุณากรอกข้อมูลในช่องด้านล่าง"
+                } else null
+            )
+        }
+    }
+
+    fun updateOrderDraftFields(
+        payoutText: String? = null,
+        distanceText: String? = null,
+        deadMileageText: String? = null,
+        minutesText: String? = null,
+        pickupName: String? = null,
+        dropoffName: String? = null
+    ) {
+        _uiState.update { state ->
+            val cur = state.currentOrderDraft
+            val nextPayout = if (payoutText != null) payoutText.trim().toDoubleOrNull()?.takeIf { it > 0.0 } else cur.payoutBaht
+            val nextDist = if (distanceText != null) distanceText.trim().toDoubleOrNull()?.takeIf { it > 0.0 } else cur.distanceKm
+            val nextDead = if (deadMileageText != null) deadMileageText.trim().toDoubleOrNull()?.takeIf { it >= 0.0 } else cur.deadMileageKm
+            val nextMins = if (minutesText != null) minutesText.trim().toIntOrNull()?.takeIf { it > 0 } else cur.estimatedMinutes
+            val nextPickup = if (pickupName != null) pickupName.trim().takeIf { it.isNotEmpty() } else cur.pickupName
+            val nextDropoff = if (dropoffName != null) dropoffName.trim().takeIf { it.isNotEmpty() } else cur.dropoffName
+
+            val missing = buildList {
+                if (nextPayout == null) add("รายได้ (บาท)")
+                if (nextDist == null) add("ระยะทาง (กม.)")
+                if (nextMins == null) add("เวลาโดยประมาณ (นาที)")
+            }
+
+            val updatedDraft = cur.copy(
+                payoutBaht = nextPayout,
+                distanceKm = nextDist,
+                deadMileageKm = nextDead,
+                estimatedMinutes = nextMins,
+                pickupName = nextPickup,
+                dropoffName = nextDropoff,
+                missingFields = missing,
+                wasUserCorrected = true,
+                overallConfidence = if (nextPayout != null && nextDist != null) {
+                    if (nextMins != null) 1.0f else 0.85f
+                } else 0.3f
+            )
+            val analysis = RiderIntelligenceEngine.analyzeOrder(
+                draft = updatedDraft,
+                profile = state.riderProfile,
+                fuelState = state.fuelState
+            )
+            state.copy(
+                currentOrderDraft = updatedDraft,
+                currentOrderAnalysis = analysis,
+                ocrErrorMessageTh = null
+            )
+        }
+    }
+
+    fun resetOrderDraft() {
+        _uiState.update {
+            it.copy(
+                currentOrderDraft = ParsedOrderDraft(),
+                currentOrderAnalysis = null,
+                ocrErrorMessageTh = null
+            )
+        }
+    }
+
+    fun saveCurrentAnalyzedOrder(alsoLogToEarnings: Boolean): Boolean {
+        val state = _uiState.value
+        val draft = state.currentOrderDraft
+        val analysis = state.currentOrderAnalysis
+            ?: RiderIntelligenceEngine.analyzeOrder(draft, state.riderProfile, state.fuelState)
+            ?: return false
+
+        val now = System.currentTimeMillis()
+        val todayKey = DailyBreakEvenState.todayDateKey(now)
+        val pickup = draft.pickupName?.ifBlank { "จุดรับงาน" } ?: "จุดรับงาน"
+        val dropoff = draft.dropoffName?.ifBlank { "จุดส่งลูกค้า" } ?: "จุดส่งลูกค้า"
+        val orderRecord = AnalyzedOrderRecord(
+            id = "ORD-$now-${UUID.randomUUID().toString().take(4)}",
+            dateKey = todayKey,
+            source = draft.source,
+            pickupName = pickup,
+            dropoffName = dropoff,
+            payoutBaht = analysis.grossPayoutBaht,
+            distanceKm = analysis.tripDistanceKm,
+            deadMileageKm = analysis.deadMileageKm,
+            estimatedMinutes = analysis.estimatedMinutes ?: 0,
+            fuelCostBaht = analysis.fuelCostBaht,
+            netProfitBaht = analysis.netProfitBaht,
+            earningsPerKm = analysis.earningsPerKm,
+            earningsPerHour = analysis.earningsPerHour ?: 0.0,
+            smartScore = analysis.smartScore,
+            grade = analysis.grade,
+            confidenceScore = analysis.confidenceScore,
+            wasUserCorrected = draft.wasUserCorrected,
+            savedToEarnings = alsoLogToEarnings,
+            latitude = state.telemetry.latitude ?: state.activePin?.latitude,
+            longitude = state.telemetry.longitude ?: state.activePin?.longitude,
+            createdAtMillis = now
+        )
+
+        val updatedOrders = listOf(orderRecord) + state.analyzedOrders
+        _uiState.update {
+            it.copy(
+                analyzedOrders = updatedOrders,
+                statusBannerMessageTh = if (alsoLogToEarnings) {
+                    String.format(
+                        Locale.US,
+                        "บันทึกผลการวิเคราะห์ (เกรด %s) และเพิ่มรายได้ +฿%.0f แล้ว",
+                        analysis.grade.label,
+                        analysis.grossPayoutBaht
+                    )
+                } else {
+                    "บันทึกผลการวิเคราะห์ออเดอร์ (เกรด ${analysis.grade.label}) เรียบร้อยแล้ว"
                 }
             )
         }
+
+        viewModelScope.launch {
+            repository?.upsertAnalyzedOrder(orderRecord)
+        }
+
+        if (alsoLogToEarnings) {
+            val title = buildString {
+                append(draft.platformHint?.let { "[$it] " } ?: "")
+                append(pickup)
+                if (dropoff != "จุดส่งลูกค้า") append(" → $dropoff")
+            }
+            addEarningsTransaction(
+                type = EarningsRecordType.INCOME,
+                dateKey = todayKey,
+                title = title,
+                category = draft.platformHint ?: "รับงาน",
+                amountBaht = analysis.grossPayoutBaht,
+                distanceKm = analysis.totalDistanceKm,
+                durationMinutes = analysis.estimatedMinutes ?: 0,
+                timestampMillis = now
+            )
+
+            // Update active work session if running
+            state.activeWorkSession?.let { active ->
+                val updatedSession = active.copy(
+                    completedOrders = active.completedOrders + 1,
+                    grossIncomeBaht = active.grossIncomeBaht + analysis.grossPayoutBaht
+                )
+                _uiState.update { s ->
+                    s.copy(workSessions = s.workSessions.map { if (it.id == active.id) updatedSession else it })
+                }
+                viewModelScope.launch { repository?.upsertWorkSession(updatedSession) }
+            }
+
+            // Enrich nearby saved pin's local historical stats (honest local history!)
+            val lat = orderRecord.latitude
+            val lng = orderRecord.longitude
+            if (lat != null && lng != null) {
+                val nearest = state.savedLocations.minByOrNull {
+                    GeoMath.haversineKm(lat, lng, it.latitude, it.longitude)
+                }
+                if (nearest != null && GeoMath.haversineKm(lat, lng, nearest.latitude, nearest.longitude) <= 1.5) {
+                    val newCount = nearest.historicalOrderCount + 1
+                    val newAvg = if (nearest.historicalOrderCount > 0 && nearest.historicalAvgPayoutBaht > 0.0) {
+                        ((nearest.historicalAvgPayoutBaht * nearest.historicalOrderCount) + analysis.grossPayoutBaht) / newCount
+                    } else {
+                        analysis.grossPayoutBaht
+                    }
+                    val updatedPin = nearest.copy(
+                        historicalOrderCount = newCount,
+                        historicalAvgPayoutBaht = newAvg
+                    )
+                    viewModelScope.launch { repository?.upsertPin(updatedPin) }
+                }
+            }
+        }
         return true
     }
 
-    fun deleteJobIncome(id: String) {
-        val updatedJobs = _uiState.value.breakEvenState.jobIncomes.filterNot { it.id == id }
-        prefs?.edit()?.putString(KEY_JOB_INCOMES, JobIncomeEntry.serializeList(updatedJobs))?.apply()
-        _uiState.update { state ->
-            state.copy(
-                breakEvenState = state.breakEvenState.copy(jobIncomes = updatedJobs)
-            )
-        }
-    }
-
-    // =========================================================================
-    // Feature 4: ประเมินน้ำมันที่เหลือ (Fuel Estimator)
-    // =========================================================================
-
-    fun updateFuelSettings(
-        tankCapacityLiters: Float,
-        consumptionKmPerLiter: Float,
-        lowFuelWarningLiters: Float
-    ) {
-        val safeCap = tankCapacityLiters.coerceIn(0.5f, 200f)
-        val safeCons = consumptionKmPerLiter.coerceIn(1.0f, 120f)
-        val safeWarn = lowFuelWarningLiters.coerceIn(0.1f, safeCap)
-
-        prefs?.edit()
-            ?.putFloat(KEY_FUEL_TANK_LITERS, safeCap)
-            ?.putFloat(KEY_FUEL_KM_PER_LITER, safeCons)
-            ?.putFloat(KEY_FUEL_LOW_WARN_LITERS, safeWarn)
-            ?.apply()
-
-        val currentFuel = _uiState.value.fuelState
-        val updated = currentFuel.copy(
-            tankCapacityLiters = safeCap,
-            consumptionKmPerLiter = safeCons,
-            lowFuelWarningLiters = safeWarn
-        )
+    fun deleteAnalyzedOrder(id: String) {
         _uiState.update {
             it.copy(
-                fuelState = updated,
-                statusBannerMessageTh = "บันทึกค่าถังน้ำมันและอัตราสิ้นเปลืองเรียบร้อยแล้ว"
+                analyzedOrders = it.analyzedOrders.filterNot { o -> o.id == id },
+                statusBannerMessageTh = "ลบประวัติการวิเคราะห์ออเดอร์แล้ว"
             )
         }
+        viewModelScope.launch { repository?.deleteAnalyzedOrder(id) }
     }
 
-    fun markRefueledFullTank() {
-        prefs?.edit()?.putFloat(KEY_FUEL_DIST_DRIVEN_KM, 0f)?.apply()
-        _uiState.update { state ->
-            state.copy(
-                fuelState = state.fuelState.copy(
-                    distanceDrivenSinceRefuelKm = 0.0,
-                    lowFuelAlertTriggered = false
-                ),
-                statusBannerMessageTh = "รีเซ็ตปริมาณน้ำมันเต็มถังเรียบร้อยแล้ว"
+    fun clearAllAnalyzedOrders() {
+        _uiState.update {
+            it.copy(
+                analyzedOrders = emptyList(),
+                statusBannerMessageTh = "ล้างประวัติ OCR และออเดอร์ที่วิเคราะห์ทั้งหมดแล้ว"
             )
         }
+        viewModelScope.launch { repository?.clearAnalyzedOrders() }
     }
 
     // =========================================================================
-    // Feature 5: หมุดปั๊มน้ำมันและจุดพัก (Fuel Stations & Rest Stops + Overpass)
+    // Smart Map, Pins, Hotzones, Restaurants & Zone Radius
     // =========================================================================
 
-    fun addCustomPoi(name: String, category: StopPoiCategory, latitude: Double, longitude: Double): Boolean {
-        if (latitude !in -90.0..90.0 || longitude !in -180.0..180.0) return false
-        val cleanName = name.trim().ifBlank { category.labelTh }
-        val item = StopPoiItem(
-            id = "POI-${System.currentTimeMillis()}",
+    fun setMapTapActionMode(mode: MapTapActionMode) {
+        _uiState.update { it.copy(mapTapActionMode = mode) }
+    }
+
+    fun setNewPinCategory(category: PinCategory) {
+        _uiState.update { it.copy(newPinCategory = category) }
+    }
+
+    fun updateMapLayerFilters(transform: (MapLayerFilters) -> MapLayerFilters) {
+        _uiState.update { it.copy(mapLayerFilters = transform(it.mapLayerFilters)) }
+    }
+
+    fun selectMapPinForSheet(pinId: String?) {
+        _uiState.update { it.copy(selectedMapPinId = pinId) }
+    }
+
+    fun saveCurrentLocation(
+        customName: String,
+        moveActivePinInstead: Boolean = false,
+        category: PinCategory = _uiState.value.newPinCategory
+    ): Boolean {
+        val currentTelemetry = _uiState.value.telemetry
+        val lat = currentTelemetry.latitude ?: return false
+        val lng = currentTelemetry.longitude ?: return false
+
+        val existingActive = _uiState.value.activePin
+        if (moveActivePinInstead && existingActive != null) {
+            return moveSavedPin(
+                id = existingActive.id,
+                newLatitude = lat,
+                newLongitude = lng,
+                newName = customName.trim().takeIf { it.isNotEmpty() }
+            )
+        }
+
+        val cleanName = customName.trim().ifBlank {
+            "${category.labelTh} #${_uiState.value.savedLocations.size + 1}"
+        }
+        val newItem = SavedLocationItem(
+            id = "LOC-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(4)}",
             name = cleanName,
-            category = category,
-            latitude = latitude,
-            longitude = longitude,
-            isUserSaved = true,
-            timestampMillis = System.currentTimeMillis()
+            latitude = lat,
+            longitude = lng,
+            accuracyMeters = currentTelemetry.accuracyMeters,
+            altitudeMeters = currentTelemetry.altitudeMeters,
+            timestampMillis = System.currentTimeMillis(),
+            category = category
         )
-        val updated = listOf(item) + _uiState.value.savedPois
-        prefs?.edit()?.putString(KEY_SAVED_POIS, StopPoiItem.serializeList(updated))?.apply()
-        _uiState.update {
-            it.copy(
-                savedPois = updated,
-                statusBannerMessageTh = "บันทึก${category.labelTh} \"$cleanName\" เรียบร้อยแล้ว"
-            )
-        }
-        return true
+        return insertPinAndActivate(newItem, "ปักหมุด \"$cleanName\" เรียบร้อยแล้ว")
     }
 
-    fun deleteSavedPoi(id: String) {
-        val updated = _uiState.value.savedPois.filterNot { it.id == id }
-        prefs?.edit()?.putString(KEY_SAVED_POIS, StopPoiItem.serializeList(updated))?.apply()
-        _uiState.update {
-            it.copy(
-                savedPois = updated,
-                statusBannerMessageTh = "ลบหมุดจุดแวะพักเรียบร้อยแล้ว"
+    fun onMapTapPin(latitude: Double, longitude: Double, customName: String = "") {
+        val clampedLat = latitude.coerceIn(-85.0, 85.0)
+        val clampedLng = longitude.coerceIn(-180.0, 180.0)
+        val currentActive = _uiState.value.activePin
+        val mode = _uiState.value.mapTapActionMode
+
+        if (mode == MapTapActionMode.MOVE_ACTIVE_PIN && currentActive != null) {
+            moveSavedPin(
+                id = currentActive.id,
+                newLatitude = clampedLat,
+                newLongitude = clampedLng,
+                newName = customName.trim().takeIf { it.isNotEmpty() }
             )
+        } else {
+            val cat = _uiState.value.newPinCategory
+            val cleanName = customName.trim().ifBlank {
+                "${cat.labelTh} #${_uiState.value.savedLocations.size + 1}"
+            }
+            val newItem = SavedLocationItem(
+                id = "LOC-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(4)}",
+                name = cleanName,
+                latitude = clampedLat,
+                longitude = clampedLng,
+                accuracyMeters = null,
+                altitudeMeters = null,
+                timestampMillis = System.currentTimeMillis(),
+                category = cat
+            )
+            insertPinAndActivate(newItem, "ปักหมุด \"$cleanName\" บนแผนที่แล้ว")
         }
     }
 
-    fun saveOverpassStationToMyPins(poi: StopPoiItem) {
-        if (_uiState.value.savedPois.none { it.id == poi.id }) {
-            val savedPoi = poi.copy(isUserSaved = true, timestampMillis = System.currentTimeMillis())
-            val updatedPois = listOf(savedPoi) + _uiState.value.savedPois
-            prefs?.edit()?.putString(KEY_SAVED_POIS, StopPoiItem.serializeList(updatedPois))?.apply()
-            _uiState.update { it.copy(savedPois = updatedPois) }
+    fun pinOrMoveFromCoordinatesText(
+        rawCoordinateText: String,
+        customName: String,
+        moveActivePinInstead: Boolean = false,
+        category: PinCategory = _uiState.value.newPinCategory
+    ): Boolean {
+        val parsed = GeoMath.parseCoordinateInput(rawCoordinateText) ?: return false
+        val (lat, lng) = parsed
+        val currentActive = _uiState.value.activePin
+
+        if (moveActivePinInstead && currentActive != null) {
+            return moveSavedPin(
+                id = currentActive.id,
+                newLatitude = lat,
+                newLongitude = lng,
+                newName = customName.trim().takeIf { it.isNotEmpty() }
+            )
         }
-        val newPin = SavedLocationItem(
-            id = "LOC-${System.currentTimeMillis()}",
-            name = poi.name,
-            latitude = poi.latitude,
-            longitude = poi.longitude,
+
+        val cleanName = customName.trim().ifBlank {
+            "${category.labelTh} #${_uiState.value.savedLocations.size + 1}"
+        }
+        val newItem = SavedLocationItem(
+            id = "LOC-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(4)}",
+            name = cleanName,
+            latitude = lat,
+            longitude = lng,
             accuracyMeters = null,
             altitudeMeters = null,
-            timestampMillis = System.currentTimeMillis()
+            timestampMillis = System.currentTimeMillis(),
+            category = category
         )
-        val updatedPins = listOf(newPin) + _uiState.value.savedLocations
-        persistPinsAndActiveId(updatedPins, _uiState.value.activePinId ?: newPin.id)
-        _uiState.update {
-            it.copy(
-                savedLocations = updatedPins,
-                activePinId = it.activePinId ?: newPin.id,
-                statusBannerMessageTh = "บันทึก \"${poi.name}\" เป็นหมุดของฉันเรียบร้อยแล้ว"
-            )
-        }
+        return insertPinAndActivate(newItem, "ปักหมุด \"$cleanName\" จากพิกัดที่วางเรียบร้อยแล้ว")
     }
 
-    fun setOverpassSearchRadiusKm(radiusKm: Int) {
-        val valid = if (radiusKm in listOf(2, 5, 10)) radiusKm else 5
-        prefs?.edit()?.putInt(KEY_OVERPASS_RADIUS_KM, valid)?.apply()
-        _uiState.update { it.copy(overpassSearchRadiusKm = valid) }
+    private fun insertPinAndActivate(item: SavedLocationItem, messageTh: String): Boolean {
+        val updatedList = listOf(item) + _uiState.value.savedLocations
+        val nextActiveId = if (item.category == PinCategory.FIXPOINT || _uiState.value.activePinId == null) {
+            item.id
+        } else {
+            _uiState.value.activePinId
+        }
+        _uiState.update {
+            it.copy(
+                savedLocations = updatedList,
+                activePinId = nextActiveId,
+                selectedMapPinId = item.id,
+                statusBannerMessageTh = messageTh
+            )
+        }
+        viewModelScope.launch {
+            repository?.upsertPin(item)
+            repository?.preferencesStore?.updateZoneSettings(
+                activePinId = nextActiveId,
+                radiusKm = _uiState.value.zoneRadiusKm,
+                bufferMeters = _uiState.value.gpsBufferMeters
+            )
+        }
+        syncZoneConfigToBus()
+        recalculateZoneEvaluation(triggerAlertsOnTransition = true)
+        return true
+    }
+
+    fun selectActivePin(id: String) {
+        val target = _uiState.value.savedLocations.firstOrNull { it.id == id } ?: return
+        _uiState.update {
+            it.copy(
+                activePinId = id,
+                isZoneAlertMuted = false,
+                statusBannerMessageTh = "ตั้ง \"${target.name}\" เป็นหมุดโซนหลักแล้ว"
+            )
+        }
+        viewModelScope.launch {
+            repository?.preferencesStore?.updateZoneSettings(
+                activePinId = id,
+                radiusKm = _uiState.value.zoneRadiusKm,
+                bufferMeters = _uiState.value.gpsBufferMeters
+            )
+        }
+        syncZoneConfigToBus()
+        recalculateZoneEvaluation(triggerAlertsOnTransition = true)
+    }
+
+    fun moveSavedPin(
+        id: String,
+        newLatitude: Double,
+        newLongitude: Double,
+        newName: String? = null
+    ): Boolean {
+        if (newLatitude !in -90.0..90.0 || newLongitude !in -180.0..180.0) return false
+        val currentList = _uiState.value.savedLocations
+        val existing = currentList.firstOrNull { it.id == id } ?: return false
+
+        val resolvedName = newName?.trim()?.takeIf { it.isNotEmpty() } ?: existing.name
+        val updatedPin = existing.copy(
+            name = resolvedName,
+            latitude = newLatitude,
+            longitude = newLongitude,
+            timestampMillis = System.currentTimeMillis()
+        )
+        val updatedList = currentList.map { if (it.id == id) updatedPin else it }
+        _uiState.update {
+            it.copy(
+                savedLocations = updatedList,
+                activePinId = it.activePinId ?: id,
+                statusBannerMessageTh = "อัปเดตตำแหน่งหมุด \"$resolvedName\" เรียบร้อยแล้ว"
+            )
+        }
+        viewModelScope.launch {
+            repository?.upsertPin(updatedPin)
+        }
+        syncZoneConfigToBus()
+        recalculateZoneEvaluation(triggerAlertsOnTransition = true)
+        return true
+    }
+
+    fun updatePinCategoryAndNotes(id: String, category: PinCategory, newName: String, notes: String) {
+        val existing = _uiState.value.savedLocations.firstOrNull { it.id == id } ?: return
+        val updated = existing.copy(
+            name = newName.trim().ifBlank { existing.name },
+            category = category,
+            notes = notes.trim()
+        )
+        _uiState.update { state ->
+            state.copy(
+                savedLocations = state.savedLocations.map { if (it.id == id) updated else it },
+                statusBannerMessageTh = "บันทึกข้อมูลหมุด \"${updated.name}\" แล้ว"
+            )
+        }
+        viewModelScope.launch { repository?.upsertPin(updated) }
+    }
+
+    fun deleteSavedLocation(id: String) {
+        val updatedList = _uiState.value.savedLocations.filterNot { it.id == id }
+        val nextActiveId = if (_uiState.value.activePinId == id) updatedList.firstOrNull()?.id else _uiState.value.activePinId
+        val nextSelected = if (_uiState.value.selectedMapPinId == id) null else _uiState.value.selectedMapPinId
+        _uiState.update {
+            it.copy(
+                savedLocations = updatedList,
+                activePinId = nextActiveId,
+                selectedMapPinId = nextSelected,
+                statusBannerMessageTh = "ลบหมุดที่บันทึกเรียบร้อยแล้ว"
+            )
+        }
+        viewModelScope.launch {
+            repository?.deletePin(id)
+            repository?.preferencesStore?.updateZoneSettings(
+                activePinId = nextActiveId,
+                radiusKm = _uiState.value.zoneRadiusKm,
+                bufferMeters = _uiState.value.gpsBufferMeters
+            )
+        }
+        syncZoneConfigToBus()
+        recalculateZoneEvaluation(triggerAlertsOnTransition = false)
+    }
+
+    fun setZoneRadiusKm(radiusKm: Float) {
+        val rounded = ((radiusKm.coerceIn(0.0f, 30.0f) * 10f).roundToInt() / 10f)
+        _uiState.update { it.copy(zoneRadiusKm = rounded) }
+        viewModelScope.launch {
+            repository?.preferencesStore?.updateZoneSettings(
+                activePinId = _uiState.value.activePinId,
+                radiusKm = rounded,
+                bufferMeters = _uiState.value.gpsBufferMeters
+            )
+        }
+        syncZoneConfigToBus()
+        recalculateZoneEvaluation(triggerAlertsOnTransition = true)
+    }
+
+    fun setGpsBufferMeters(bufferMeters: Int) {
+        val clamped = bufferMeters.coerceIn(0, 100)
+        _uiState.update {
+            it.copy(
+                gpsBufferMeters = clamped,
+                statusBannerMessageTh = "ตั้งค่าเผื่อสัญญาณ GPS เป็น $clamped เมตร"
+            )
+        }
+        viewModelScope.launch {
+            repository?.preferencesStore?.updateZoneSettings(
+                activePinId = _uiState.value.activePinId,
+                radiusKm = _uiState.value.zoneRadiusKm,
+                bufferMeters = clamped
+            )
+        }
+        syncZoneConfigToBus()
+        recalculateZoneEvaluation(triggerAlertsOnTransition = true)
     }
 
     fun searchNearbyFuelStations(forceRefresh: Boolean = false) {
@@ -1281,65 +1596,31 @@ class FixPointViewModel : ViewModel() {
         val lng = _uiState.value.telemetry.longitude ?: _uiState.value.activePin?.longitude
         if (lat == null || lng == null) {
             _uiState.update {
-                it.copy(
-                    overpassErrorOrStatusTh = "กรุณาเปิดล็อกสัญญาณ GPS หรือเลือกหมุดก่อนค้นหาปั๊มน้ำมันใกล้ฉัน"
-                )
+                it.copy(overpassErrorOrStatusTh = "กรุณาเปิด GPS หรือปักหมุดก่อนค้นหาปั๊มน้ำมันใกล้เคียง")
             }
             return
         }
-
-        val state = _uiState.value
-        val now = System.currentTimeMillis()
-        val cacheAgeMs = now - state.overpassCacheTimestampMillis
-        val movedKm = if (state.overpassLastSearchLat != null && state.overpassLastSearchLng != null) {
-            GeoMath.haversineKm(state.overpassLastSearchLat, state.overpassLastSearchLng, lat, lng)
-        } else {
-            Double.MAX_VALUE
-        }
-
-        if (!forceRefresh &&
-            state.nearbyOverpassFuelPois.isNotEmpty() &&
-            cacheAgeMs < 24 * 60 * 60 * 1000L &&
-            movedKm < 2.0
-        ) {
-            _uiState.update {
-                it.copy(overpassErrorOrStatusTh = "แสดงข้อมูลจากแคช (ไม่เกิน 24 ชม.) • กดรีเฟรชเพื่ออัปเดตใหม่")
-            }
-            return
-        }
-
-        val radiusKm = state.overpassSearchRadiusKm
+        val radiusKm = _uiState.value.overpassSearchRadiusKm
         _uiState.update {
             it.copy(
                 isSearchingOverpass = true,
-                overpassErrorOrStatusTh = "กำลังค้นหาปั๊มน้ำมันในรัศมี $radiusKm กม. จาก Overpass API..."
+                overpassErrorOrStatusTh = "กำลังค้นหาปั๊มน้ำมันในรัศมี $radiusKm กม. (OpenStreetMap)..."
             )
         }
-
         viewModelScope.launch {
             when (val res = NetworkClients.fetchNearbyFuelStationsOverpass(lat, lng, radiusKm)) {
                 is OverpassFuelResult.Success -> {
                     val sorted = res.stations.sortedBy {
                         GeoMath.haversineMeters(lat, lng, it.latitude, it.longitude)
                     }
-                    val ts = System.currentTimeMillis()
-                    prefs?.edit()
-                        ?.putString(KEY_OVERPASS_CACHE_ITEMS, StopPoiItem.serializeList(sorted))
-                        ?.putLong(KEY_OVERPASS_CACHE_TS, ts)
-                        ?.putString(KEY_OVERPASS_LAST_LAT, lat.toString())
-                        ?.putString(KEY_OVERPASS_LAST_LNG, lng.toString())
-                        ?.apply()
                     _uiState.update {
                         it.copy(
                             isSearchingOverpass = false,
                             nearbyOverpassFuelPois = sorted,
-                            overpassCacheTimestampMillis = ts,
-                            overpassLastSearchLat = lat,
-                            overpassLastSearchLng = lng,
                             overpassErrorOrStatusTh = if (sorted.isEmpty()) {
                                 "ไม่พบปั๊มน้ำมันในรัศมี $radiusKm กม."
                             } else {
-                                "พบปั๊มน้ำมัน ${sorted.size} แห่งในรัศมี $radiusKm กม."
+                                "พบปั๊มน้ำมัน ${sorted.size} แห่ง"
                             }
                         )
                     }
@@ -1357,484 +1638,341 @@ class FixPointViewModel : ViewModel() {
     }
 
     // =========================================================================
-    // Feature 6: เตือนฝนใกล้ตก (Open-Meteo Rain Forecast & Alert)
+    // Smart Earnings 2.0 & Break-Even (Room-backed)
     // =========================================================================
 
-    fun setRainAlertEnabled(enabled: Boolean) {
-        prefs?.edit()?.putBoolean(KEY_RAIN_ALERT_ENABLED, enabled)?.apply()
-        _uiState.update { state ->
-            state.copy(
-                rainForecast = state.rainForecast.copy(alertEnabled = enabled),
-                statusBannerMessageTh = if (enabled) "เปิดการแจ้งเตือนฝนใกล้ตกแล้ว" else "ปิดการแจ้งเตือนฝนใกล้ตกแล้ว"
-            )
-        }
-        syncZoneConfigToBus()
-        if (enabled) {
-            refreshRainForecast(force = true)
+    fun selectEarningsPeriod(period: EarningsPeriod) {
+        _uiState.update {
+            it.copy(smartEarningsState = it.smartEarningsState.copy(selectedPeriod = period))
         }
     }
 
-    fun setRainLeadTimeOption(option: RainLeadTimeOption) {
-        prefs?.edit()?.putString(KEY_RAIN_LEAD_OPTION, option.name)?.apply()
+    fun shiftEarningsDate(delta: Int) {
         _uiState.update { state ->
-            state.copy(
-                rainForecast = state.rainForecast.copy(leadTimeOption = option),
-                statusBannerMessageTh = "ตั้งเวลาเตือนฝนล่วงหน้าเป็น ${option.labelTh}"
-            )
-        }
-        syncZoneConfigToBus()
-        refreshRainForecast(force = true)
-    }
-
-    fun setRainProbabilityThreshold(percent: Int) {
-        val clamped = percent.coerceIn(10, 95)
-        prefs?.edit()?.putInt(KEY_RAIN_PROB_THRESHOLD, clamped)?.apply()
-        _uiState.update { state ->
-            state.copy(
-                rainForecast = state.rainForecast.copy(probabilityThresholdPercent = clamped)
-            )
-        }
-        syncZoneConfigToBus()
-    }
-
-    fun refreshRainForecast(force: Boolean = false) {
-        val lat = _uiState.value.telemetry.latitude ?: _uiState.value.activePin?.latitude
-        val lng = _uiState.value.telemetry.longitude ?: _uiState.value.activePin?.longitude
-        if (lat == null || lng == null) {
-            _uiState.update { state ->
-                state.copy(
-                    rainForecast = state.rainForecast.copy(
-                        status = WeatherForecastStatus.IDLE,
-                        errorMessageTh = null
-                    )
-                )
-            }
-            return
-        }
-
-        val currentRf = _uiState.value.rainForecast
-        if (!force && currentRf.status == WeatherForecastStatus.LOADING) return
-
-        _uiState.update { state ->
-            state.copy(
-                rainForecast = state.rainForecast.copy(
-                    status = WeatherForecastStatus.LOADING,
-                    errorMessageTh = null
-                )
-            )
-        }
-
-        viewModelScope.launch {
-            val threshold = _uiState.value.rainForecast.probabilityThresholdPercent
-            val leadMinutes = _uiState.value.rainForecast.leadTimeOption.minutes
-            when (val res = NetworkClients.fetchRainForecastOpenMeteo(lat, lng, threshold, leadMinutes)) {
-                is OpenMeteoResult.Success -> {
-                    val fc = res.forecast
-                    val nextStatus = if (fc.willRainSoon) {
-                        WeatherForecastStatus.RAIN_COMING
-                    } else {
-                        WeatherForecastStatus.NO_RAIN
-                    }
-                    _uiState.update { state ->
-                        state.copy(
-                            rainForecast = state.rainForecast.copy(
-                                status = nextStatus,
-                                minutesUntilRain = fc.minutesUntilRain,
-                                maxRainProbabilityPercent = fc.probabilityPercent,
-                                expectedPrecipitationMm = fc.precipitationMm,
-                                lastUpdatedEpochMillis = fc.fetchedAtMillis,
-                                lastFetchedLat = lat,
-                                lastFetchedLng = lng,
-                                errorMessageTh = null
-                            )
-                        )
-                    }
-
-                    // Trigger vibration + notification if rain is within user's lead-time window (max once per 30 mins)
-                    val s = _uiState.value
-                    val mins = fc.minutesUntilRain ?: leadMinutes
-                    if (fc.willRainSoon && s.rainForecast.alertEnabled && mins <= leadMinutes) {
-                        val now = System.currentTimeMillis()
-                        if (GpsServiceRuntimeBus.recordRainAlertFired(now)) {
-                            _uiState.update { st ->
-                                st.copy(
-                                    rainForecast = st.rainForecast.copy(lastAlertFiredEpochMillis = now),
-                                    statusBannerMessageTh = "ฝนใกล้ตก เตรียมเสื้อกันฝน (อีก $mins นาที โอกาส ${fc.probabilityPercent}%)"
-                                )
-                            }
-                            appContextRef?.let { ctx ->
-                                TacticalSoundEngine.triggerRainApproachingWarning(
-                                    context = ctx,
-                                    vibrationEnabled = s.alertVibrationEnabled,
-                                    soundEnabled = s.alertSoundEnabled,
-                                    volumePercent = s.alertVolumePercent
-                                )
-                                GpsServiceRuntimeBus.postRainNotification(
-                                    context = ctx,
-                                    minutesUntilRain = mins,
-                                    probabilityPercent = fc.probabilityPercent
-                                )
-                            }
-                        }
-                    }
-                }
-                is OpenMeteoResult.Failure -> {
-                    _uiState.update { state ->
-                        state.copy(
-                            rainForecast = state.rainForecast.copy(
-                                status = WeatherForecastStatus.ERROR,
-                                errorMessageTh = "ดึงพยากรณ์ไม่ได้"
-                            )
-                        )
-                    }
-                }
-            }
+            val cur = state.smartEarningsState
+            val shifted = SmartEarningsCalculator.shiftDateKey(cur.selectedDateKey, cur.selectedPeriod, delta)
+            state.copy(smartEarningsState = cur.copy(selectedDateKey = shifted))
         }
     }
 
-    // =========================================================================
-    // Existing Pin & Zone Functions (Preserved 100%)
-    // =========================================================================
-
-    fun saveCurrentLocation(customName: String, moveActivePinInstead: Boolean = false): Boolean {
-        val currentTelemetry = _uiState.value.telemetry
-        val lat = currentTelemetry.latitude ?: return false
-        val lng = currentTelemetry.longitude ?: return false
-
-        val existingActive = _uiState.value.activePin
-        if (moveActivePinInstead && existingActive != null) {
-            return moveSavedPin(
-                id = existingActive.id,
-                newLatitude = lat,
-                newLongitude = lng,
-                newName = customName.trim().takeIf { it.isNotEmpty() }
-            )
+    fun resetEarningsDateToToday() {
+        val today = DailyBreakEvenState.todayDateKey()
+        _uiState.update {
+            it.copy(smartEarningsState = it.smartEarningsState.copy(selectedDateKey = today))
         }
+    }
 
-        val cleanName = customName.trim().ifBlank {
-            "หมุดโซนรับงาน #${_uiState.value.savedLocations.size + 1}"
+    fun selectEarningsHistoryFilter(filter: EarningsHistoryFilter) {
+        _uiState.update {
+            it.copy(smartEarningsState = it.smartEarningsState.copy(historyFilter = filter))
         }
-        val newItem = SavedLocationItem(
-            id = "LOC-${System.currentTimeMillis()}",
-            name = cleanName,
-            latitude = lat,
-            longitude = lng,
-            accuracyMeters = currentTelemetry.accuracyMeters,
-            altitudeMeters = currentTelemetry.altitudeMeters,
-            timestampMillis = System.currentTimeMillis()
+    }
+
+    fun updateEarningsGoals(dailyBaht: Double, weeklyBaht: Double, monthlyBaht: Double) {
+        val goals = EarningsGoals(
+            dailyGoalBaht = dailyBaht.coerceAtLeast(0.0),
+            weeklyGoalBaht = weeklyBaht.coerceAtLeast(0.0),
+            monthlyGoalBaht = monthlyBaht.coerceAtLeast(0.0)
         )
-        val updatedList = listOf(newItem) + _uiState.value.savedLocations
-        persistPinsAndActiveId(updatedList, newItem.id)
-
         _uiState.update {
             it.copy(
-                savedLocations = updatedList,
-                activePinId = newItem.id,
-                statusBannerMessageTh = "ปักหมุดและเลือกใช้งาน \"$cleanName\" เรียบร้อยแล้ว"
+                smartEarningsState = it.smartEarningsState.copy(goals = goals),
+                statusBannerMessageTh = "บันทึกเป้าหมายรายได้เรียบร้อยแล้ว"
             )
         }
-        syncZoneConfigToBus()
-        recalculateZoneEvaluation(triggerAlertsOnTransition = true)
-        return true
+        viewModelScope.launch { repository?.preferencesStore?.updateGoals(goals) }
     }
 
-    fun onMapTapPin(latitude: Double, longitude: Double, customName: String = "") {
-        val clampedLat = latitude.coerceIn(-85.0, 85.0)
-        val clampedLng = longitude.coerceIn(-180.0, 180.0)
-        val currentActive = _uiState.value.activePin
-        val mode = _uiState.value.mapTapActionMode
-
-        if (mode == MapTapActionMode.MOVE_ACTIVE_PIN && currentActive != null) {
-            moveSavedPin(
-                id = currentActive.id,
-                newLatitude = clampedLat,
-                newLongitude = clampedLng,
-                newName = customName.trim().takeIf { it.isNotEmpty() }
+    fun updateDailyWorkHours(dateKey: String, hours: Double) {
+        if (!dateKey.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) return
+        val safeMinutes = (hours.coerceIn(0.0, 24.0) * 60.0).roundToInt()
+        val currentMap = _uiState.value.smartEarningsState.dailyWorkMetrics
+        val existing = currentMap[dateKey] ?: DailyWorkMetrics(dateKey = dateKey)
+        val updatedMetric = existing.copy(workMinutes = safeMinutes)
+        val updatedMap = currentMap.toMutableMap().apply { put(dateKey, updatedMetric) }
+        _uiState.update {
+            it.copy(
+                smartEarningsState = it.smartEarningsState.copy(dailyWorkMetrics = updatedMap),
+                statusBannerMessageTh = String.format(Locale.US, "บันทึกชั่วโมงทำงาน %.1f ชม. เรียบร้อยแล้ว", safeMinutes / 60.0)
             )
-        } else {
-            val cleanName = customName.trim().ifBlank {
-                "หมุดแผนที่ #${_uiState.value.savedLocations.size + 1}"
-            }
-            val newItem = SavedLocationItem(
-                id = "LOC-${System.currentTimeMillis()}",
-                name = cleanName,
-                latitude = clampedLat,
-                longitude = clampedLng,
-                accuracyMeters = null,
-                altitudeMeters = null,
+        }
+        viewModelScope.launch { repository?.upsertDailyMetric(updatedMetric) }
+    }
+
+    fun updateFixedDailyCosts(fuelCostBaht: Double) {
+        val safeFuel = fuelCostBaht.coerceAtLeast(0.0)
+        val todayKey = DailyBreakEvenState.todayDateKey()
+        val fuelTxnId = "DAILY-FUEL-$todayKey"
+        val currentTxns = _uiState.value.smartEarningsState.transactions.filterNot { it.id == fuelTxnId }
+        val fuelTxn = if (safeFuel > 0.0) {
+            EarningsTransaction(
+                id = fuelTxnId,
+                type = EarningsRecordType.EXPENSE,
+                dateKey = todayKey,
+                title = "ค่าน้ำมันรายวัน",
+                category = "น้ำมัน",
+                amountBaht = safeFuel,
                 timestampMillis = System.currentTimeMillis()
             )
-            val updatedList = listOf(newItem) + _uiState.value.savedLocations
-            persistPinsAndActiveId(updatedList, newItem.id)
-            _uiState.update {
-                it.copy(
-                    savedLocations = updatedList,
-                    activePinId = newItem.id,
-                    statusBannerMessageTh = "ปักหมุด \"$cleanName\" จากแผนที่เรียบร้อยแล้ว"
-                )
-            }
-            syncZoneConfigToBus()
-            recalculateZoneEvaluation(triggerAlertsOnTransition = true)
+        } else null
+        val updatedTxns = if (fuelTxn != null) listOf(fuelTxn) + currentTxns else currentTxns
+        _uiState.update {
+            it.copy(
+                breakEvenState = it.breakEvenState.copy(fuelCostBaht = safeFuel),
+                smartEarningsState = it.smartEarningsState.copy(transactions = updatedTxns),
+                statusBannerMessageTh = "บันทึกค่าน้ำมันรายวันเรียบร้อยแล้ว"
+            )
+        }
+        viewModelScope.launch {
+            if (fuelTxn != null) repository?.upsertTransaction(fuelTxn)
+            else repository?.deleteTransaction(fuelTxnId)
         }
     }
 
-    fun pinOrMoveFromCoordinatesText(
-        rawCoordinateText: String,
-        customName: String,
-        moveActivePinInstead: Boolean = false
+    fun addEarningsTransaction(
+        type: EarningsRecordType,
+        dateKey: String,
+        title: String,
+        category: String,
+        amountBaht: Double,
+        distanceKm: Double = 0.0,
+        durationMinutes: Int = 0,
+        timestampMillis: Long = System.currentTimeMillis()
     ): Boolean {
-        val parsed = GeoMath.parseCoordinateInput(rawCoordinateText) ?: return false
-        val (lat, lng) = parsed
-        val currentActive = _uiState.value.activePin
-
-        if (moveActivePinInstead && currentActive != null) {
-            return moveSavedPin(
-                id = currentActive.id,
-                newLatitude = lat,
-                newLongitude = lng,
-                newName = customName.trim().takeIf { it.isNotEmpty() }
-            )
-        }
-
-        val cleanName = customName.trim().ifBlank {
-            "หมุดพิกัด #${_uiState.value.savedLocations.size + 1}"
-        }
-        val newItem = SavedLocationItem(
-            id = "LOC-${System.currentTimeMillis()}",
-            name = cleanName,
-            latitude = lat,
-            longitude = lng,
-            accuracyMeters = null,
-            altitudeMeters = null,
-            timestampMillis = System.currentTimeMillis()
-        )
-        val updatedList = listOf(newItem) + _uiState.value.savedLocations
-        persistPinsAndActiveId(updatedList, newItem.id)
-
-        _uiState.update {
-            it.copy(
-                savedLocations = updatedList,
-                activePinId = newItem.id,
-                statusBannerMessageTh = "ปักหมุด \"$cleanName\" จากพิกัดที่วางเรียบร้อยแล้ว"
-            )
-        }
-        syncZoneConfigToBus()
-        recalculateZoneEvaluation(triggerAlertsOnTransition = true)
-        return true
-    }
-
-    fun selectActivePin(id: String) {
-        val target = _uiState.value.savedLocations.firstOrNull { it.id == id } ?: return
-        prefs?.edit()?.putString(KEY_ACTIVE_PIN_ID, id)?.apply()
-        _uiState.update {
-            it.copy(
-                activePinId = id,
-                isZoneAlertMuted = false,
-                statusBannerMessageTh = "เลือกหมุดใช้งาน: \"${target.name}\""
-            )
-        }
-        syncZoneConfigToBus()
-        recalculateZoneEvaluation(triggerAlertsOnTransition = true)
-    }
-
-    fun moveSavedPin(
-        id: String,
-        newLatitude: Double,
-        newLongitude: Double,
-        newName: String? = null
-    ): Boolean {
-        if (newLatitude !in -90.0..90.0 || newLongitude !in -180.0..180.0) return false
-        val currentList = _uiState.value.savedLocations
-        if (currentList.none { it.id == id }) return false
-
-        var movedName = ""
-        val updatedList = currentList.map { item ->
-            if (item.id == id) {
-                val resolvedName = newName?.trim()?.takeIf { it.isNotEmpty() } ?: item.name
-                movedName = resolvedName
-                item.copy(
-                    name = resolvedName,
-                    latitude = newLatitude,
-                    longitude = newLongitude,
-                    timestampMillis = System.currentTimeMillis()
-                )
-            } else {
-                item
-            }
-        }
-        persistPinsAndActiveId(updatedList, _uiState.value.activePinId ?: id)
-        _uiState.update {
-            it.copy(
-                savedLocations = updatedList,
-                activePinId = it.activePinId ?: id,
-                statusBannerMessageTh = "ย้ายตำแหน่งหมุด \"$movedName\" เรียบร้อยแล้ว"
-            )
-        }
-        syncZoneConfigToBus()
-        recalculateZoneEvaluation(triggerAlertsOnTransition = true)
-        return true
-    }
-
-    fun renameSavedPin(id: String, newName: String): Boolean {
-        val clean = newName.trim()
-        if (clean.isEmpty()) return false
-        val updatedList = _uiState.value.savedLocations.map { item ->
-            if (item.id == id) item.copy(name = clean) else item
-        }
-        persistPinsAndActiveId(updatedList, _uiState.value.activePinId)
-        _uiState.update {
-            it.copy(
-                savedLocations = updatedList,
-                statusBannerMessageTh = "เปลี่ยนชื่อหมุดเป็น \"$clean\" เรียบร้อยแล้ว"
-            )
-        }
-        syncZoneConfigToBus()
-        return true
-    }
-
-    fun deleteSavedLocation(id: String) {
-        val updatedList = _uiState.value.savedLocations.filterNot { it.id == id }
-        val nextActiveId = if (_uiState.value.activePinId == id) {
-            updatedList.firstOrNull()?.id
+        if (amountBaht <= 0.0) return false
+        val validDateKey = if (dateKey.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) {
+            dateKey
         } else {
-            _uiState.value.activePinId
+            DailyBreakEvenState.todayDateKey()
         }
-        persistPinsAndActiveId(updatedList, nextActiveId)
+        val cleanTitle = title.trim().ifBlank {
+            if (type == EarningsRecordType.INCOME) "รายได้รับงาน" else category.ifBlank { "ค่าใช้จ่าย" }
+        }
+        val cleanCategory = category.trim().ifBlank {
+            if (type == EarningsRecordType.INCOME) "รับงาน" else "ทั่วไป"
+        }
+        val candidate = EarningsTransaction(
+            id = "TXN-$timestampMillis-${UUID.randomUUID().toString().take(6)}",
+            type = type,
+            dateKey = validDateKey,
+            title = cleanTitle,
+            category = cleanCategory,
+            amountBaht = amountBaht,
+            distanceKm = distanceKm.coerceAtLeast(0.0),
+            durationMinutes = durationMinutes.coerceAtLeast(0),
+            timestampMillis = timestampMillis
+        )
+        val existingTxns = _uiState.value.smartEarningsState.transactions
+        if (EarningsTransaction.isDuplicateCandidate(existingTxns, candidate)) {
+            _uiState.update { it.copy(statusBannerMessageTh = "พบรายการซ้ำ ระบบป้องกันการบันทึกซ้ำแล้ว") }
+            return false
+        }
+        val updatedTxns = (listOf(candidate) + existingTxns).distinctBy { it.id }
         _uiState.update {
             it.copy(
-                savedLocations = updatedList,
-                activePinId = nextActiveId,
-                statusBannerMessageTh = "ลบหมุดที่บันทึกเรียบร้อยแล้ว"
+                smartEarningsState = it.smartEarningsState.copy(transactions = updatedTxns),
+                statusBannerMessageTh = if (type == EarningsRecordType.INCOME) {
+                    String.format(Locale.US, "บันทึกรายได้ +฿%.0f เรียบร้อยแล้ว", amountBaht)
+                } else {
+                    String.format(Locale.US, "บันทึกค่าใช้จ่าย -฿%.0f เรียบร้อยแล้ว", amountBaht)
+                }
             )
         }
-        syncZoneConfigToBus()
-        recalculateZoneEvaluation(triggerAlertsOnTransition = false)
+        viewModelScope.launch { repository?.upsertTransaction(candidate) }
+        return true
     }
 
-    private fun persistPinsAndActiveId(list: List<SavedLocationItem>, activeId: String?) {
-        prefs?.edit()?.apply {
-            putString(KEY_SAVED_LOCATIONS, SavedLocationItem.serializeList(list))
-            if (activeId != null) {
-                putString(KEY_ACTIVE_PIN_ID, activeId)
-            } else {
-                remove(KEY_ACTIVE_PIN_ID)
-            }
-            apply()
-        }
-    }
-
-    fun setZoneRadiusKm(radiusKm: Float) {
-        val rounded = ((radiusKm.coerceIn(0.0f, 30.0f) * 10f).roundToInt() / 10f)
-        prefs?.edit()?.putFloat(KEY_ZONE_RADIUS_KM, rounded)?.apply()
-        _uiState.update {
-            it.copy(zoneRadiusKm = rounded)
-        }
-        syncZoneConfigToBus()
-        recalculateZoneEvaluation(triggerAlertsOnTransition = true)
-    }
-
-    fun setGpsBufferMeters(bufferMeters: Int) {
-        val clamped = bufferMeters.coerceIn(0, 100)
-        prefs?.edit()?.putInt(KEY_GPS_BUFFER_METERS, clamped)?.apply()
+    fun deleteEarningsTransaction(id: String) {
+        val updatedTxns = _uiState.value.smartEarningsState.transactions.filterNot { it.id == id }
         _uiState.update {
             it.copy(
-                gpsBufferMeters = clamped,
-                statusBannerMessageTh = "ตั้งค่าเผื่อสัญญาณ GPS (Buffer) เป็น $clamped เมตร"
+                smartEarningsState = it.smartEarningsState.copy(transactions = updatedTxns),
+                statusBannerMessageTh = "ลบรายการเรียบร้อยแล้ว"
             )
         }
-        syncZoneConfigToBus()
-        recalculateZoneEvaluation(triggerAlertsOnTransition = true)
+        viewModelScope.launch { repository?.deleteTransaction(id) }
+    }
+
+    // =========================================================================
+    // Profile, Vehicle, Fuel, Privacy, Preferences & Local Backup/Restore
+    // =========================================================================
+
+    fun updateRiderProfile(profile: RiderProfileConfig) {
+        val sanitized = profile.copy(
+            riderName = profile.riderName.trim().ifBlank { "Rider FixPoint" },
+            vehicleModel = profile.vehicleModel.trim().ifBlank { "Motorcycle" },
+            fuelPricePerLiterBaht = profile.fuelPricePerLiterBaht.coerceIn(0f, 200f),
+            maintenanceBahtPerKm = profile.maintenanceBahtPerKm.coerceIn(0f, 50f),
+            minAcceptableBahtPerKm = profile.minAcceptableBahtPerKm.coerceIn(1f, 500f),
+            minAcceptableBahtPerHour = profile.minAcceptableBahtPerHour.coerceIn(20f, 5000f)
+        )
+        _uiState.update { state ->
+            val updatedAnalysis = RiderIntelligenceEngine.analyzeOrder(
+                draft = state.currentOrderDraft,
+                profile = sanitized,
+                fuelState = state.fuelState
+            )
+            state.copy(
+                riderProfile = sanitized,
+                currentOrderAnalysis = updatedAnalysis,
+                statusBannerMessageTh = "บันทึกข้อมูลโปรไฟล์และเกณฑ์คำนวณเรียบร้อยแล้ว"
+            )
+        }
+        viewModelScope.launch { repository?.preferencesStore?.updateProfile(sanitized) }
+    }
+
+    fun updatePrivacyPreferences(transform: (PrivacyPreferences) -> PrivacyPreferences) {
+        val updated = transform(_uiState.value.privacyPreferences)
+        _uiState.update {
+            it.copy(
+                privacyPreferences = updated,
+                statusBannerMessageTh = "อัปเดตการตั้งค่าความเป็นส่วนตัวแล้ว"
+            )
+        }
+        viewModelScope.launch { repository?.preferencesStore?.updatePrivacy(updated) }
+    }
+
+    fun updateFuelSettings(
+        tankCapacityLiters: Float,
+        consumptionKmPerLiter: Float,
+        lowFuelWarningLiters: Float
+    ) {
+        val safeCap = tankCapacityLiters.coerceIn(0.5f, 200f)
+        val safeCons = consumptionKmPerLiter.coerceIn(1.0f, 120f)
+        val safeWarn = lowFuelWarningLiters.coerceIn(0.1f, safeCap)
+        val updated = _uiState.value.fuelState.copy(
+            tankCapacityLiters = safeCap,
+            consumptionKmPerLiter = safeCons,
+            lowFuelWarningLiters = safeWarn
+        )
+        _uiState.update {
+            it.copy(
+                fuelState = updated,
+                statusBannerMessageTh = "บันทึกค่าถังน้ำมันและอัตราสิ้นเปลืองเรียบร้อยแล้ว"
+            )
+        }
+        viewModelScope.launch { repository?.preferencesStore?.updateFuel(updated) }
+    }
+
+    fun markRefueledFullTank() {
+        val updated = _uiState.value.fuelState.copy(
+            distanceDrivenSinceRefuelKm = 0.0,
+            lowFuelAlertTriggered = false
+        )
+        _uiState.update {
+            it.copy(
+                fuelState = updated,
+                statusBannerMessageTh = "รีเซ็ตปริมาณน้ำมันเต็มถังเรียบร้อยแล้ว"
+            )
+        }
+        viewModelScope.launch { repository?.preferencesStore?.updateFuel(updated) }
     }
 
     fun setAlertVibrationEnabled(enabled: Boolean) {
-        prefs?.edit()?.putBoolean(KEY_ALERT_VIBRATION, enabled)?.apply()
         _uiState.update {
             it.copy(
                 alertVibrationEnabled = enabled,
                 statusBannerMessageTh = if (enabled) "เปิดการสั่นแจ้งเตือนโซนแล้ว" else "ปิดการสั่นแจ้งเตือนโซนแล้ว"
             )
         }
-        syncZoneConfigToBus()
-    }
-
-    fun setAlertSoundEnabled(enabled: Boolean) {
-        prefs?.edit()?.putBoolean(KEY_ALERT_SOUND, enabled)?.apply()
-        _uiState.update {
-            it.copy(
-                alertSoundEnabled = enabled,
-                statusBannerMessageTh = if (enabled) "เปิดเสียงแจ้งเตือนโซนแล้ว" else "ปิดเสียงแจ้งเตือนโซนแล้ว"
-            )
-        }
-        syncZoneConfigToBus()
-    }
-
-    fun setAlertTone(tone: ZoneAlertTone, playPreview: Boolean = true) {
-        prefs?.edit()?.putString(KEY_ALERT_TONE, tone.name)?.apply()
-        _uiState.update {
-            it.copy(
-                alertTone = tone,
-                statusBannerMessageTh = "เลือกเสียงเตือน: ${tone.titleTh}"
-            )
-        }
-        syncZoneConfigToBus()
-        if (playPreview) {
-            TacticalSoundEngine.playZoneAlertTone(
-                soundEnabled = true,
-                tone = tone,
-                volumePercent = _uiState.value.alertVolumePercent.coerceAtLeast(40)
-            )
-        }
-    }
-
-    fun setAlertVolumePercent(volumePercent: Int) {
-        val clamped = volumePercent.coerceIn(0, 100)
-        prefs?.edit()?.putInt(KEY_ALERT_VOLUME, clamped)?.apply()
-        _uiState.update {
-            it.copy(alertVolumePercent = clamped)
-        }
+        persistTelemetryPrefs()
         syncZoneConfigToBus()
     }
 
     fun setMeasurementUnit(unit: MeasurementUnit) {
-        prefs?.edit()?.putString(KEY_MEASUREMENT_UNIT, unit.name)?.apply()
         _uiState.update {
             it.copy(
                 measurementUnit = unit,
                 statusBannerMessageTh = "เปลี่ยนหน่วยวัดเป็น ${unit.titleTh}"
             )
         }
+        persistTelemetryPrefs()
     }
 
     fun setUpdateFrequency(context: Context, frequency: UpdateFrequency) {
-        prefs?.edit()?.putString(KEY_UPDATE_FREQUENCY, frequency.name)?.apply()
         _uiState.update {
             it.copy(
                 updateFrequency = frequency,
-                statusBannerMessageTh = "ตั้งความถี่การอัปเดตเป็น ${frequency.titleTh}"
+                statusBannerMessageTh = "ตั้งความถี่อัปเดต GPS เป็น ${frequency.titleTh}"
             )
         }
+        persistTelemetryPrefs()
         if (_uiState.value.isLockEnabled) {
             startGpsLockEngine(context)
         }
     }
 
     fun setCoordinateFormat(format: CoordinateFormat) {
-        prefs?.edit()?.putString(KEY_COORDINATE_FORMAT, format.name)?.apply()
         _uiState.update {
             it.copy(
                 coordinateFormat = format,
                 statusBannerMessageTh = "เปลี่ยนรูปแบบพิกัดเป็น ${format.titleTh}"
             )
         }
+        persistTelemetryPrefs()
     }
 
     fun setKeepScreenOn(enabled: Boolean) {
-        prefs?.edit()?.putBoolean(KEY_KEEP_SCREEN_ON, enabled)?.apply()
         _uiState.update {
             it.copy(
                 keepScreenOn = enabled,
                 statusBannerMessageTh = if (enabled) "เปิดโหมดหน้าจอค้างไว้เสมอ" else "ปิดโหมดหน้าจอค้างไว้เสมอ"
             )
+        }
+        persistTelemetryPrefs()
+    }
+
+    private fun persistTelemetryPrefs() {
+        val s = _uiState.value
+        viewModelScope.launch {
+            repository?.preferencesStore?.updateTelemetryPreferences(
+                alertVibrationEnabled = s.alertVibrationEnabled,
+                measurementUnit = s.measurementUnit,
+                updateFrequency = s.updateFrequency,
+                coordinateFormat = s.coordinateFormat,
+                keepScreenOn = s.keepScreenOn,
+                lockEnabled = s.isLockEnabled
+            )
+        }
+    }
+
+    fun exportBackupToUri(context: Context, uri: Uri) {
+        viewModelScope.launch {
+            val repo = repository ?: FixPointRepository(context.applicationContext)
+            runCatching {
+                val json = repo.exportLocalBackupJson()
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(json.toByteArray(Charsets.UTF_8))
+                } ?: error("ไม่สามารถเปิดไฟล์ปลายทางได้")
+            }.onSuccess {
+                _uiState.update {
+                    it.copy(statusBannerMessageTh = "สำรองข้อมูลทั้งหมดลงไฟล์ในเครื่องเรียบร้อยแล้ว")
+                }
+            }.onFailure { err ->
+                _uiState.update {
+                    it.copy(statusBannerMessageTh = "สำรองข้อมูลไม่สำเร็จ (${err.localizedMessage ?: "ข้อผิดพลาดไฟล์"})")
+                }
+            }
+        }
+    }
+
+    fun importBackupFromUri(context: Context, uri: Uri) {
+        viewModelScope.launch {
+            val repo = repository ?: FixPointRepository(context.applicationContext)
+            runCatching {
+                val raw = context.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use {
+                    it.readText()
+                } ?: error("ไม่สามารถอ่านไฟล์สำรองได้")
+                repo.importLocalBackupJson(raw).getOrThrow()
+            }.onSuccess { count ->
+                _uiState.update {
+                    it.copy(statusBannerMessageTh = "กู้คืนข้อมูลจากไฟล์สำรองเรียบร้อยแล้ว ($count รายการ)")
+                }
+            }.onFailure { err ->
+                _uiState.update {
+                    it.copy(statusBannerMessageTh = "กู้คืนข้อมูลไม่สำเร็จ (${err.localizedMessage ?: "รูปแบบไฟล์ไม่ถูกต้อง"})")
+                }
+            }
         }
     }
 
@@ -1842,55 +1980,12 @@ class FixPointViewModel : ViewModel() {
         _uiState.update { it.copy(statusBannerMessageTh = null) }
     }
 
-    fun onHardwareSensorFixReceived(location: Location) {
-        _uiState.update { it.copy(isLockEnabled = true) }
-        applyHardwareLocation(location)
-    }
-
     override fun onCleared() {
         super.onCleared()
         stopViewModelRepeatAlertLoop()
-        periodicMaintenanceJob?.cancel()
+        sessionTickerJob?.cancel()
         try {
             locationService?.stopLocationUpdates()
         } catch (_: Throwable) {}
-    }
-
-    companion object {
-        private const val PREFS_NAME = "crimson_fixpoint_prefs"
-        private const val KEY_LOCK_ENABLED = "key_lock_enabled"
-        private const val KEY_MEASUREMENT_UNIT = "key_measurement_unit"
-        private const val KEY_UPDATE_FREQUENCY = "key_update_frequency"
-        private const val KEY_COORDINATE_FORMAT = "key_coordinate_format"
-        private const val KEY_KEEP_SCREEN_ON = "key_keep_screen_on"
-        private const val KEY_SAVED_LOCATIONS = "key_saved_locations"
-        private const val KEY_ACTIVE_PIN_ID = "key_active_pin_id"
-        private const val KEY_ZONE_RADIUS_KM = "key_zone_radius_km"
-        private const val KEY_GPS_BUFFER_METERS = "key_gps_buffer_meters"
-        private const val KEY_ALERT_VIBRATION = "key_alert_vibration"
-        private const val KEY_ALERT_SOUND = "key_alert_sound"
-        private const val KEY_ALERT_TONE = "key_alert_tone"
-        private const val KEY_ALERT_VOLUME = "key_alert_volume"
-        // v1.0.1 keys
-        private const val KEY_DELIVERY_STOPS = "key_delivery_stops"
-        private const val KEY_BREAKEVEN_DATE = "key_breakeven_date"
-        private const val KEY_CAR_INSTALLMENT = "key_car_installment"
-        private const val KEY_DAILY_FUEL_COST = "key_daily_fuel_cost"
-        private const val KEY_CUSTOM_EXPENSES = "key_custom_expenses"
-        private const val KEY_JOB_INCOMES = "key_job_incomes"
-        private const val KEY_FINANCIAL_HISTORY = "key_financial_history"
-        private const val KEY_FUEL_TANK_LITERS = "key_fuel_tank_liters"
-        private const val KEY_FUEL_KM_PER_LITER = "key_fuel_km_per_liter"
-        private const val KEY_FUEL_DIST_DRIVEN_KM = "key_fuel_dist_driven_km"
-        private const val KEY_FUEL_LOW_WARN_LITERS = "key_fuel_low_warn_liters"
-        private const val KEY_SAVED_POIS = "key_saved_pois"
-        private const val KEY_OVERPASS_CACHE_ITEMS = "key_overpass_cache_items"
-        private const val KEY_OVERPASS_CACHE_TS = "key_overpass_cache_ts"
-        private const val KEY_OVERPASS_LAST_LAT = "key_overpass_last_lat"
-        private const val KEY_OVERPASS_LAST_LNG = "key_overpass_last_lng"
-        private const val KEY_OVERPASS_RADIUS_KM = "key_overpass_radius_km"
-        private const val KEY_RAIN_ALERT_ENABLED = "key_rain_alert_enabled"
-        private const val KEY_RAIN_LEAD_OPTION = "key_rain_lead_option"
-        private const val KEY_RAIN_PROB_THRESHOLD = "key_rain_prob_threshold"
     }
 }

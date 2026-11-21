@@ -1,8 +1,10 @@
 <resources>
     <string name="app_name">Crimson FixPoint</string>
-    <string name="nav_home">หน้าหลัก</string>
-    <string name="nav_saved">พิกัดที่บันทึก</string>
-    <string name="nav_settings">การตั้งค่า</string>
+    <string name="nav_dashboard">ภาพรวม</string>
+    <string name="nav_ai_assistant">AI ผู้ช่วย</string>
+    <string name="nav_smart_map">แผนที่</string>
+    <string name="nav_earnings">รายได้</string>
+    <string name="nav_profile">โปรไฟล์</string>
     <string name="state_off">ปิดการทำงาน</string>
     <string name="state_searching">กำลังค้นหาสัญญาณ</string>
     <string name="state_locked">ล็อกสัญญาณแล้ว</string>

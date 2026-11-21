@@ -25,7 +25,6 @@ import com.example.MainActivity
 import com.example.model.GeoMath
 import com.example.model.SatelliteBarItem
 import com.example.model.SavedLocationItem
-import com.example.model.ZoneAlertTone
 import com.example.model.ZoneMonitorStatus
 import com.example.util.TacticalSoundEngine
 import kotlinx.coroutines.CoroutineScope
@@ -48,18 +47,12 @@ data class ServiceZoneConfig(
     val radiusKm: Float = 5.0f,
     val gpsBufferMeters: Int = 20,
     val alertVibrationEnabled: Boolean = true,
-    val alertSoundEnabled: Boolean = true,
-    val alertTone: ZoneAlertTone = ZoneAlertTone.SIREN_DUAL,
-    val alertVolumePercent: Int = 85,
-    val isAlertMuted: Boolean = false,
-    val rainAlertEnabled: Boolean = true,
-    val rainLeadTimeMinutes: Int = 30,
-    val rainProbabilityThresholdPercent: Int = 50
+    val isAlertMuted: Boolean = false
 )
 
 /**
  * Shared real-time bridge between [GpsKeepAliveService] and [com.example.viewmodel.FixPointViewModel]
- * so background GPS fixes, satellite status, out-of-zone alerts, and rain alerts stay synchronized even when the screen turns off.
+ * so background GPS fixes, satellite status, and out-of-zone alerts stay synchronized even when the screen turns off.
  */
 object GpsServiceRuntimeBus {
     private val _isServiceRunning = MutableStateFlow(false)
@@ -76,9 +69,6 @@ object GpsServiceRuntimeBus {
 
     private val _zoneConfig = MutableStateFlow(ServiceZoneConfig())
     val zoneConfig: StateFlow<ServiceZoneConfig> = _zoneConfig.asStateFlow()
-
-    private val _lastRainAlertEpochMillis = MutableStateFlow(0L)
-    val lastRainAlertEpochMillis: StateFlow<Long> = _lastRainAlertEpochMillis.asStateFlow()
 
     fun setRunning(running: Boolean) {
         _isServiceRunning.value = running
@@ -103,47 +93,6 @@ object GpsServiceRuntimeBus {
     fun setAlertMuted(muted: Boolean) {
         _zoneConfig.update { it.copy(isAlertMuted = muted) }
     }
-
-    fun recordRainAlertFired(epochMillis: Long): Boolean {
-        val prev = _lastRainAlertEpochMillis.value
-        if (epochMillis - prev < 30 * 60 * 1000L) return false
-        _lastRainAlertEpochMillis.value = epochMillis
-        return true
-    }
-
-    fun postRainNotification(context: Context, minutesUntilRain: Int, probabilityPercent: Int) {
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val rainChannel = NotificationChannel(
-                "crimson_fixpoint_rain_alert",
-                "การแจ้งเตือนฝนใกล้ตก",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "แจ้งเตือนล่วงหน้าเมื่อพยากรณ์อากาศตรวจพบโอกาสฝนตกตามพิกัดปัจจุบัน"
-            }
-            nm.createNotificationChannel(rainChannel)
-        }
-        val openAppIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pendingOpen = PendingIntent.getActivity(
-            context,
-            305,
-            openAppIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val bodyText = "ฝนจะตกในอีก $minutesUntilRain นาที โอกาส $probabilityPercent%"
-        val notification = NotificationCompat.Builder(context, "crimson_fixpoint_rain_alert")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("ฝนใกล้ตก เตรียมเสื้อกันฝน")
-            .setContentText(bodyText)
-            .setStyle(NotificationCompat.BigTextStyle().bigText("ฝนใกล้ตก เตรียมเสื้อกันฝน • $bodyText"))
-            .setContentIntent(pendingOpen)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .build()
-        nm.notify(4105, notification)
-    }
 }
 
 /**
@@ -163,16 +112,11 @@ class GpsKeepAliveService : Service() {
     private var updateIntervalMillis: Long = 1000L
     private var lastEvaluatedZoneStatus: ZoneMonitorStatus = ZoneMonitorStatus.NO_ACTIVE_PIN
 
-    private var lastServiceWeatherCheckMillis = 0L
-    private var lastServiceWeatherLat: Double? = null
-    private var lastServiceWeatherLng: Double? = null
-
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
             currentLocation = location
             GpsServiceRuntimeBus.postLocation(location)
             evaluateZoneInService(location)
-            maybeCheckRainInService(location)
             updateNotification(force = false)
         }
 
@@ -180,50 +124,6 @@ class GpsKeepAliveService : Service() {
         override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
         override fun onProviderEnabled(provider: String) = Unit
         override fun onProviderDisabled(provider: String) = Unit
-    }
-
-    private fun maybeCheckRainInService(location: Location) {
-        val cfg = GpsServiceRuntimeBus.zoneConfig.value
-        if (!cfg.rainAlertEnabled) return
-        val now = System.currentTimeMillis()
-        val prevLat = lastServiceWeatherLat
-        val prevLng = lastServiceWeatherLng
-        val movedOver5Km = prevLat != null && prevLng != null &&
-            GeoMath.haversineKm(prevLat, prevLng, location.latitude, location.longitude) >= 5.0
-        val tenMinElapsed = now - lastServiceWeatherCheckMillis >= 10 * 60 * 1000L
-
-        if (!tenMinElapsed && !movedOver5Km) return
-        lastServiceWeatherCheckMillis = now
-        lastServiceWeatherLat = location.latitude
-        lastServiceWeatherLng = location.longitude
-
-        serviceScope.launch {
-            val res = com.example.util.NetworkClients.fetchRainForecastOpenMeteo(
-                latitude = location.latitude,
-                longitude = location.longitude,
-                probabilityThresholdPercent = cfg.rainProbabilityThresholdPercent,
-                leadTimeWindowMinutes = cfg.rainLeadTimeMinutes
-            )
-            if (res is com.example.util.OpenMeteoResult.Success && res.forecast.willRainSoon) {
-                val mins = res.forecast.minutesUntilRain ?: cfg.rainLeadTimeMinutes
-                if (mins <= cfg.rainLeadTimeMinutes) {
-                    val fired = GpsServiceRuntimeBus.recordRainAlertFired(System.currentTimeMillis())
-                    if (fired) {
-                        TacticalSoundEngine.triggerRainApproachingWarning(
-                            context = applicationContext,
-                            vibrationEnabled = cfg.alertVibrationEnabled,
-                            soundEnabled = cfg.alertSoundEnabled,
-                            volumePercent = cfg.alertVolumePercent
-                        )
-                        GpsServiceRuntimeBus.postRainNotification(
-                            context = applicationContext,
-                            minutesUntilRain = mins,
-                            probabilityPercent = res.forecast.probabilityPercent
-                        )
-                    }
-                }
-            }
-        }
     }
 
     private val gnssCallback = object : GnssStatus.Callback() {
@@ -413,10 +313,6 @@ class GpsKeepAliveService : Service() {
                     applicationContext,
                     cfg.alertVibrationEnabled
                 )
-                TacticalSoundEngine.playReturnToZoneChime(
-                    cfg.alertSoundEnabled,
-                    cfg.alertVolumePercent
-                )
                 postZoneTransitionAlertNotification(
                     title = "กลับเข้าโซนแล้ว",
                     body = "ตำแหน่งปัจจุบันกลับเข้าสู่โซน \"${pin.name}\" (ระยะห่าง ${GeoMath.formatShortZoneDistanceTh(distanceMeters)})",
@@ -431,11 +327,6 @@ class GpsKeepAliveService : Service() {
         val pin = cfg.activePin ?: return
         if (!cfg.isAlertMuted) {
             TacticalSoundEngine.vibrateOutOfZone(applicationContext, cfg.alertVibrationEnabled)
-            TacticalSoundEngine.playZoneAlertTone(
-                soundEnabled = cfg.alertSoundEnabled,
-                tone = cfg.alertTone,
-                volumePercent = cfg.alertVolumePercent
-            )
         }
         postZoneTransitionAlertNotification(
             title = "ออกนอกโซนรับงานแล้ว",
@@ -466,11 +357,6 @@ class GpsKeepAliveService : Service() {
                     break
                 }
                 TacticalSoundEngine.vibrateOutOfZone(applicationContext, cfg.alertVibrationEnabled)
-                TacticalSoundEngine.playZoneAlertTone(
-                    soundEnabled = cfg.alertSoundEnabled,
-                    tone = cfg.alertTone,
-                    volumePercent = cfg.alertVolumePercent
-                )
             }
         }
     }
@@ -517,12 +403,12 @@ class GpsKeepAliveService : Service() {
             )
             builder.addAction(
                 android.R.drawable.ic_lock_silent_mode,
-                "ปิดเสียงเตือน",
+                "หยุดเตือนชั่วคราว",
                 pendingMute
             )
         }
 
-        nm.notify(ALERT_NOTIFICATION_ID, builder.build())
+        nm.notify(ALERT_NOTIFICATION_ID, builder.setSilent(true).build())
     }
 
     private fun acquireKeepAliveWakeLock() {
@@ -640,12 +526,12 @@ class GpsKeepAliveService : Service() {
             )
             builder.addAction(
                 android.R.drawable.ic_lock_silent_mode,
-                "ปิดเสียงเตือน",
+                "หยุดเตือนชั่วคราว",
                 pendingMute
             )
         }
 
-        return builder.build()
+        return builder.setSilent(true).build()
     }
 
     private fun createNotificationChannels() {
@@ -657,6 +543,7 @@ class GpsKeepAliveService : Service() {
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "แสดงสถานะการทำงานของระบบตรึงสัญญาณพิกัดและตรวจรัศมีโซนรับงานต่อเนื่อง"
+                setSound(null, null)
             }
             val alertChannel = NotificationChannel(
                 ALERT_CHANNEL_ID,
@@ -664,6 +551,7 @@ class GpsKeepAliveService : Service() {
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "แจ้งเตือนทันทีเมื่อตำแหน่งจริงออกนอกรัศมีโซนรับงานหรือกลับเข้าโซน"
+                setSound(null, null)
             }
             nm.createNotificationChannel(serviceChannel)
             nm.createNotificationChannel(alertChannel)

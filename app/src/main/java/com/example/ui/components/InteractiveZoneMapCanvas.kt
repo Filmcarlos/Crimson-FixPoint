@@ -30,11 +30,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.MyLocation
-import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Icon
@@ -56,14 +56,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
@@ -78,8 +76,10 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.model.DeliveryStopItem
 import com.example.model.GeoMath
+import com.example.model.HotspotRecommendation
+import com.example.model.MapLayerFilters
+import com.example.model.PinCategory
 import com.example.model.SavedLocationItem
 import com.example.model.StopPoiCategory
 import com.example.model.StopPoiItem
@@ -88,10 +88,13 @@ import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CrimsonBorderGlow
 import com.example.ui.theme.CrimsonNeon
 import com.example.ui.theme.CrimsonRed
+import com.example.ui.theme.CyanTelemetry
 import com.example.ui.theme.EmeraldSRank
-import com.example.ui.theme.TextHudMuted
+import com.example.ui.theme.HairlineBorder
+import com.example.ui.theme.SurfaceLevel2
 import com.example.ui.theme.TextHudPrimary
 import com.example.ui.theme.TextHudSecondary
+import com.example.ui.theme.VioletInsight
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -103,10 +106,10 @@ import java.net.URL
 import java.util.Collections
 import java.util.Locale
 import kotlin.math.PI
-import kotlin.math.abs
 import kotlin.math.atan
 import kotlin.math.cos
 import kotlin.math.floor
+import kotlin.math.hypot
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
@@ -115,19 +118,12 @@ import kotlin.math.roundToInt
 import kotlin.math.sinh
 import kotlin.math.tan
 
-/**
- * Memory + Disk Cache for standard OpenStreetMap tiles (`https://tile.openstreetmap.org/{z}/{x}/{y}.png`).
- * Completely eliminates `android.webkit.WebView` so Chromium renderer crashes (`aw_browser_terminator.cc`)
- * can never happen, while rendering real OpenStreetMap tiles with dark-mode styling.
- */
 private object OsmTileRepository {
-    private val memoryCache = object : LruCache<String, ImageBitmap>(180) {}
+    private val memoryCache = object : LruCache<String, ImageBitmap>(200) {}
     private val inFlightKeys: MutableSet<String> = Collections.synchronizedSet(HashSet())
     private val downloadSemaphore = Semaphore(6)
 
-    fun getCached(z: Int, x: Int, y: Int): ImageBitmap? {
-        return memoryCache.get("$z/$x/$y")
-    }
+    fun getCached(z: Int, x: Int, y: Int): ImageBitmap? = memoryCache.get("$z/$x/$y")
 
     suspend fun fetchTile(
         context: Context,
@@ -166,7 +162,7 @@ private object OsmTileRepository {
                     readTimeout = 8000
                     setRequestProperty(
                         "User-Agent",
-                        "CrimsonFixPoint/1.0.1 (Android; https://www.openstreetmap.org)"
+                        "CrimsonFixPoint/2.0.0 (Android; https://www.openstreetmap.org)"
                     )
                     setRequestProperty("Accept", "image/png,image/*;q=0.8")
                 }
@@ -183,15 +179,10 @@ private object OsmTileRepository {
                             }
                             Result.success(bmp)
                         } else {
-                            Result.failure( IllegalStateException("ไม่สามารถถอดรหัสภาพแผนที่ OpenStreetMap ได้"))
+                            Result.failure(IllegalStateException("ไม่สามารถถอดรหัสภาพแผนที่ OpenStreetMap ได้"))
                         }
                     } else {
-                        val reason = when (code) {
-                            403, 429 -> "โหลดไทล์แผนที่ไม่สำเร็จ: เซิร์ฟเวอร์ OpenStreetMap จำกัดการเข้าถึงชั่วคราว (HTTP $code)"
-                            in 500..599 -> "โหลดไทล์แผนที่ไม่สำเร็จ: เซิร์ฟเวอร์ OpenStreetMap ขัดข้องชั่วคราว (HTTP $code)"
-                            else -> "โหลดไทล์แผนที่ OpenStreetMap ไม่สำเร็จ (HTTP $code)"
-                        }
-                        Result.failure(IllegalStateException(reason))
+                        Result.failure(IllegalStateException("โหลดไทล์แผนที่ OpenStreetMap ไม่สำเร็จ (HTTP $code)"))
                     }
                 } finally {
                     conn.disconnect()
@@ -199,8 +190,7 @@ private object OsmTileRepository {
             }
         } catch (e: Exception) {
             val netErr = checkNetworkStatusErrorTh(context)
-            val msg = netErr
-                ?: "โหลดไทล์แผนที่จาก tile.openstreetmap.org ไม่สำเร็จ (${e.localizedMessage ?: "เครือข่ายขัดข้อง"})"
+            val msg = netErr ?: "โหลดไทล์แผนที่ OpenStreetMap ไม่สำเร็จ (${e.localizedMessage ?: "เครือข่ายขัดข้อง"})"
             Result.failure(IllegalStateException(msg))
         } finally {
             inFlightKeys.remove(key)
@@ -213,11 +203,11 @@ private fun checkNetworkStatusErrorTh(context: Context): String? {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             ?: return@runCatching null
         val activeNetwork = cm.activeNetwork
-            ?: return@runCatching "ไม่สามารถโหลดไทล์แผนที่ได้: อุปกรณ์ไม่ได้เชื่อมต่ออินเทอร์เน็ต"
+            ?: return@runCatching "โหมดออฟไลน์: แสดงแผนที่จากแคชและหมุดในเครื่อง"
         val caps = cm.getNetworkCapabilities(activeNetwork)
-            ?: return@runCatching "ไม่สามารถโหลดไทล์แผนที่ได้: ไม่พบความสามารถเครือข่ายที่ใช้งานได้"
+            ?: return@runCatching "โหมดออฟไลน์: แสดงแผนที่จากแคชและหมุดในเครื่อง"
         if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
-            "ไม่สามารถโหลดไทล์แผนที่ได้: เครือข่ายปัจจุบันไม่มีสิทธิ์เข้าถึงอินเทอร์เน็ต"
+            "โหมดออฟไลน์: แสดงแผนที่จากแคชและหมุดในเครื่อง"
         } else {
             null
         }
@@ -239,10 +229,8 @@ private object WebMercatorMath {
         return (0.5 - mercN / (2.0 * PI)) * worldSizePx
     }
 
-    fun worldXToLng(worldX: Double, worldSizePx: Double): Double {
-        val rawLng = (worldX / worldSizePx) * 360.0 - 180.0
-        return rawLng.coerceIn(-180.0, 180.0)
-    }
+    fun worldXToLng(worldX: Double, worldSizePx: Double): Double =
+        ((worldX / worldSizePx) * 360.0 - 180.0).coerceIn(-180.0, 180.0)
 
     fun worldYToLat(worldY: Double, worldSizePx: Double): Double {
         val clampedY = worldY.coerceIn(0.0, worldSizePx)
@@ -258,7 +246,6 @@ private object WebMercatorMath {
     fun computeIdealZoomForRadius(lat: Double, radiusMeters: Double, minViewportPx: Int): Double {
         val effectiveMeters = radiusMeters.coerceAtLeast(80.0)
         val viewportPx = minViewportPx.coerceAtLeast(220).toDouble()
-        // Fit diameter with 28% margin around the circle
         val targetMetersPerPx = (effectiveMeters * 2.56) / viewportPx
         val cosLat = cos(Math.toRadians(lat.coerceIn(-80.0, 80.0))).coerceAtLeast(0.05)
         val idealZoom = ln((156543.03392 * cosLat) / targetMetersPerPx) / ln(2.0)
@@ -266,11 +253,6 @@ private object WebMercatorMath {
     }
 }
 
-/**
- * Dark-theme color filter applied directly to standard OpenStreetMap tiles
- * (`https://tile.openstreetmap.org/{z}/{x}/{y}.png`) so streets, labels, and water
- * blend into the Crimson-Obsidian theme while remaining clear and legible.
- */
 private val OsmDarkThemeColorFilter: ColorFilter = ColorFilter.colorMatrix(
     ColorMatrix(
         floatArrayOf(
@@ -283,13 +265,12 @@ private val OsmDarkThemeColorFilter: ColorFilter = ColorFilter.colorMatrix(
 )
 
 /**
- * Native OpenStreetMap Interactive Map (`https://tile.openstreetmap.org/{z}/{x}/{y}.png`):
- * - Uses keyless OpenStreetMap standard tiles styled in dark theme
- * - Zero `android.webkit.WebView` usage (prevents Chromium renderer process crashes)
- * - Displays "© OpenStreetMap contributors" attribution
- * - Displays a clear on-screen error message explaining the cause if map tiles fail to load
- * - Supports tapping on the map to place/move a pin, smooth pan/zoom, translucent red radius circle,
- *   fuel/rest POI pins, and numbered delivery route stops + red route line.
+ * Crimson FixPoint 2.0 Smart Map (Native OpenStreetMap Canvas, zero WebView):
+ * - Supports full-screen (`mapHeightDp == null`) or card-embedded height
+ * - Renders FixPoint, Hotzone, Restaurant, and Fuel markers with distinct badges & distance labels
+ * - Renders translucent Historical Hotspot Heatmap overlay (explicitly historical local data)
+ * - Highlights top recommended next destination
+ * - Supports tapping markers to open destination details sheet, or tapping empty map to pin/move
  */
 @Composable
 fun InteractiveZoneMapCanvas(
@@ -303,29 +284,28 @@ fun InteractiveZoneMapCanvas(
     distanceFromPinMeters: Double?,
     onMapTapPin: (Double, Double) -> Unit,
     modifier: Modifier = Modifier,
-    mapHeightDp: Int = 270,
+    mapHeightDp: Int? = null,
+    layerFilters: MapLayerFilters = MapLayerFilters(),
+    hotspots: List<HotspotRecommendation> = emptyList(),
     poiPins: List<StopPoiItem> = emptyList(),
-    deliveryStops: List<DeliveryStopItem> = emptyList(),
-    isRouteMapMode: Boolean = false,
+    focusTargetLatLng: Pair<Double, Double>? = null,
+    onMarkerSelected: ((SavedLocationItem) -> Unit)? = null,
+    showBuiltInControls: Boolean = true,
     testTagName: String = "interactive_zone_map_canvas"
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
     val currentOnMapTapPin by rememberUpdatedState(onMapTapPin)
+    val currentOnMarkerSelected by rememberUpdatedState(onMarkerSelected)
+    val currentPins by rememberUpdatedState(allPins)
 
-    val initialLat = activePin?.latitude
-        ?: deliveryStops.firstOrNull()?.latitude
-        ?: userLatitude
-        ?: 13.756331
-    val initialLng = activePin?.longitude
-        ?: deliveryStops.firstOrNull()?.longitude
-        ?: userLongitude
-        ?: 100.501762
+    val initialLat = activePin?.latitude ?: userLatitude ?: 13.756331
+    val initialLng = activePin?.longitude ?: userLongitude ?: 100.501762
 
     var centerLat by remember { mutableDoubleStateOf(initialLat) }
     var centerLng by remember { mutableDoubleStateOf(initialLng) }
-    var zoomLevel by remember { mutableDoubleStateOf(13.0) }
+    var zoomLevel by remember { mutableDoubleStateOf(13.2) }
     var viewportSize by remember { mutableStateOf(IntSize(800, 600)) }
 
     var tileDrawRevision by remember { mutableIntStateOf(0) }
@@ -343,7 +323,7 @@ fun InteractiveZoneMapCanvas(
 
     fun fitMapBoundsToTarget() {
         val minDim = min(viewportSize.width, viewportSize.height).coerceAtLeast(240)
-        if (!isRouteMapMode && activePin != null) {
+        if (activePin != null) {
             centerLat = activePin.latitude
             centerLng = activePin.longitude
             val totalRadiusMeters = (radiusKm * 1000.0) + gpsBufferMeters.toDouble()
@@ -354,55 +334,25 @@ fun InteractiveZoneMapCanvas(
             )
             return
         }
-
-        val pts = mutableListOf<Pair<Double, Double>>()
-        if (isRouteMapMode) {
-            if (userLatitude != null && userLongitude != null) {
-                pts.add(userLatitude to userLongitude)
-            }
-            deliveryStops.forEach { pts.add(it.latitude to it.longitude) }
-        } else if (userLatitude != null && userLongitude != null) {
-            pts.add(userLatitude to userLongitude)
-        }
-
-        if (pts.isEmpty()) return
-        if (pts.size == 1) {
-            centerLat = pts[0].first
-            centerLng = pts[0].second
+        if (userLatitude != null && userLongitude != null) {
+            centerLat = userLatitude
+            centerLng = userLongitude
             zoomLevel = 14.5
-            return
         }
-
-        val minLat = pts.minOf { it.first }
-        val maxLat = pts.maxOf { it.first }
-        val minLng = pts.minOf { it.second }
-        val maxLng = pts.maxOf { it.second }
-        val midLat = (minLat + maxLat) / 2.0
-        val midLng = (minLng + maxLng) / 2.0
-        val spanMeters = GeoMath.haversineMeters(minLat, minLng, maxLat, maxLng).coerceAtLeast(300.0)
-        centerLat = midLat
-        centerLng = midLng
-        zoomLevel = WebMercatorMath.computeIdealZoomForRadius(
-            lat = midLat,
-            radiusMeters = spanMeters * 0.65,
-            minViewportPx = minDim
-        )
     }
 
-    // Auto-fit when active pin, radius, or route stops change
-    LaunchedEffect(
-        activePin?.id,
-        activePin?.latitude,
-        activePin?.longitude,
-        radiusKm,
-        gpsBufferMeters,
-        deliveryStops.size,
-        isRouteMapMode
-    ) {
+    LaunchedEffect(activePin?.id, activePin?.latitude, activePin?.longitude, radiusKm) {
         fitMapBoundsToTarget()
     }
 
-    // Native label paints for markers
+    LaunchedEffect(focusTargetLatLng) {
+        if (focusTargetLatLng != null) {
+            centerLat = focusTargetLatLng.first
+            centerLng = focusTargetLatLng.second
+            if (zoomLevel < 14.0) zoomLevel = 14.5
+        }
+    }
+
     val labelPaint = remember(density) {
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.WHITE
@@ -411,43 +361,55 @@ fun InteractiveZoneMapCanvas(
             textAlign = Paint.Align.CENTER
         }
     }
+    val subLabelPaint = remember(density) {
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.parseColor("#CBD5E1")
+            textSize = with(density) { 9.5.sp.toPx() }
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            textAlign = Paint.Align.CENTER
+        }
+    }
     val badgeTextPaint = remember(density) {
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.WHITE
-            textSize = with(density) { 11.sp.toPx() }
+            textSize = with(density) { 10.5.sp.toPx() }
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             textAlign = Paint.Align.CENTER
         }
     }
 
-    val containerShape = RoundedCornerShape(4.dp)
+    val containerShape = if (mapHeightDp != null) RoundedCornerShape(18.dp) else RoundedCornerShape(0.dp)
+    val hitSlopPx = with(density) { 26.dp.toPx() }
 
     Box(
         modifier = modifier
-            .fillMaxWidth()
-            .height(mapHeightDp.dp)
-            .background(Color(0xFF141318), containerShape)
-            .border(
-                width = 1.5.dp,
-                color = when {
-                    isRouteMapMode -> CrimsonNeon
-                    zoneStatus == ZoneMonitorStatus.INSIDE_ZONE -> EmeraldSRank.copy(alpha = 0.9f)
-                    zoneStatus == ZoneMonitorStatus.OUTSIDE_ZONE -> CrimsonNeon
-                    else -> CrimsonBorderGlow
-                },
-                shape = containerShape
+            .then(
+                if (mapHeightDp != null) Modifier.fillMaxWidth().height(mapHeightDp.dp)
+                else Modifier.fillMaxSize()
+            )
+            .background(Color(0xFF0E0D13), containerShape)
+            .then(
+                if (mapHeightDp != null) {
+                    Modifier.border(
+                        width = 1.dp,
+                        color = when (zoneStatus) {
+                            ZoneMonitorStatus.INSIDE_ZONE -> EmeraldSRank.copy(alpha = 0.7f)
+                            ZoneMonitorStatus.OUTSIDE_ZONE -> CrimsonNeon
+                            else -> HairlineBorder
+                        },
+                        shape = containerShape
+                    )
+                } else Modifier
             )
             .clip(containerShape)
             .onSizeChanged { size ->
                 if (size.width > 0 && size.height > 0) {
                     val wasDefault = viewportSize.width == 800 && viewportSize.height == 600
                     viewportSize = size
-                    if (wasDefault) {
-                        fitMapBoundsToTarget()
-                    }
+                    if (wasDefault) fitMapBoundsToTarget()
                 }
             }
-            .pointerInput(isRouteMapMode) {
+            .pointerInput(Unit) {
                 val touchSlopPx = viewConfiguration.touchSlop
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -469,7 +431,6 @@ fun InteractiveZoneMapCanvas(
                                 val oldWorldSize = 256.0 * 2.0.pow(oldZoom)
                                 val newWorldSize = 256.0 * 2.0.pow(newZoom)
 
-                                // Keep centroid anchored during pinch-zoom
                                 val offsetFromCenterX = if (centroid != Offset.Unspecified) {
                                     (centroid.x - size.width / 2f).toDouble()
                                 } else 0.0
@@ -482,10 +443,8 @@ fun InteractiveZoneMapCanvas(
                                 val focusLat = WebMercatorMath.worldYToLat(focusWorldY, oldWorldSize)
                                 val focusLng = WebMercatorMath.worldXToLng(focusWorldX, oldWorldSize)
 
-                                val newCenterWorldX =
-                                    WebMercatorMath.lngToWorldX(focusLng, newWorldSize) - offsetFromCenterX - panChange.x
-                                val newCenterWorldY =
-                                    WebMercatorMath.latToWorldY(focusLat, newWorldSize) - offsetFromCenterY - panChange.y
+                                val newCenterWorldX = WebMercatorMath.lngToWorldX(focusLng, newWorldSize) - offsetFromCenterX - panChange.x
+                                val newCenterWorldY = WebMercatorMath.latToWorldY(focusLat, newWorldSize) - offsetFromCenterY - panChange.y
 
                                 zoomLevel = newZoom
                                 centerLng = WebMercatorMath.worldXToLng(newCenterWorldX, newWorldSize)
@@ -506,22 +465,35 @@ fun InteractiveZoneMapCanvas(
                         }
                     } while (event.changes.any { it.pressed })
 
-                    // Single tap (not a pan or pinch) -> Place or move pin at tapped coordinates
                     if (!wasMultiTouch && totalPanDistance <= touchSlopPx) {
                         val worldSize = 256.0 * 2.0.pow(zoomLevel)
                         val centerWorldX = WebMercatorMath.lngToWorldX(centerLng, worldSize)
                         val centerWorldY = WebMercatorMath.latToWorldY(centerLat, worldSize)
-                        val tappedWorldX = centerWorldX + (downPos.x - size.width / 2f)
-                        val tappedWorldY = centerWorldY + (downPos.y - size.height / 2f)
-                        val tappedLat = WebMercatorMath.worldYToLat(tappedWorldY, worldSize)
-                        val tappedLng = WebMercatorMath.worldXToLng(tappedWorldX, worldSize)
-                        currentOnMapTapPin(tappedLat, tappedLng)
+
+                        // Check if user tapped an existing marker first
+                        val markerCb = currentOnMarkerSelected
+                        val tappedPin = if (markerCb != null) {
+                            currentPins.firstOrNull { pin ->
+                                val px = (WebMercatorMath.lngToWorldX(pin.longitude, worldSize) - centerWorldX + size.width / 2.0).toFloat()
+                                val py = (WebMercatorMath.latToWorldY(pin.latitude, worldSize) - centerWorldY + size.height / 2.0).toFloat()
+                                hypot((downPos.x - px).toDouble(), (downPos.y - py).toDouble()) <= hitSlopPx
+                            }
+                        } else null
+
+                        if (tappedPin != null && markerCb != null) {
+                            markerCb(tappedPin)
+                        } else {
+                            val tappedWorldX = centerWorldX + (downPos.x - size.width / 2f)
+                            val tappedWorldY = centerWorldY + (downPos.y - size.height / 2f)
+                            val tappedLat = WebMercatorMath.worldYToLat(tappedWorldY, worldSize)
+                            val tappedLng = WebMercatorMath.worldXToLng(tappedWorldX, worldSize)
+                            currentOnMapTapPin(tappedLat, tappedLng)
+                        }
                     }
                 }
             }
             .testTag(testTagName)
     ) {
-        // Trigger background tile downloads for visible OpenStreetMap tiles
         val intZoom = floor(zoomLevel).toInt().coerceIn(2, 19)
         val numTiles = 1 shl intZoom
         val tileWorldSize = 256.0 * numTiles
@@ -556,12 +528,7 @@ fun InteractiveZoneMapCanvas(
             }
         }
 
-        Canvas(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(1.5.dp)
-        ) {
-            // Read revision so Canvas redraws as tiles arrive
+        Canvas(modifier = Modifier.fillMaxSize()) {
             val rev = tileDrawRevision
             if (rev < 0) return@Canvas
 
@@ -571,9 +538,9 @@ fun InteractiveZoneMapCanvas(
             val centerWorldX = WebMercatorMath.lngToWorldX(centerLng, continuousWorldSize)
             val centerWorldY = WebMercatorMath.latToWorldY(centerLat, continuousWorldSize)
 
-            // 1. Draw subtle dark base grid while tiles stream in
+            // 1. Subtle tactical dark base grid
             val gridStepPx = 48.dp.toPx()
-            val gridColor = Color(0xFF1F1B24)
+            val gridColor = Color(0xFF191620)
             var gx = 0f
             while (gx < canvasW) {
                 drawLine(gridColor, Offset(gx, 0f), Offset(gx, canvasH), strokeWidth = 1f)
@@ -585,10 +552,9 @@ fun InteractiveZoneMapCanvas(
                 gy += gridStepPx
             }
 
-            // 2. Draw standard OpenStreetMap tiles (https://tile.openstreetmap.org/{z}/{x}/{y}.png)
-            // with dark-mode ColorMatrix filter
+            // 2. Standard OpenStreetMap dark-filtered tiles
             val scaleFactor = 2.0.pow(zoomLevel - intZoom)
-            val scaledTilePx = (256.0 * scaleFactor)
+            val scaledTilePx = 256.0 * scaleFactor
             val topLeftWorldX = centerWorldX - canvasW / 2.0
             val topLeftWorldY = centerWorldY - canvasH / 2.0
 
@@ -616,14 +582,11 @@ fun InteractiveZoneMapCanvas(
                             colorFilter = OsmDarkThemeColorFilter
                         )
                     } else if (intZoom > 2) {
-                        // Fallback to parent zoom tile slice while current zoom loads
                         val parentBmp = OsmTileRepository.getCached(intZoom - 1, tx / 2, ty / 2)
                         if (parentBmp != null) {
-                            val srcX = (tx % 2) * 128
-                            val srcY = (ty % 2) * 128
                             drawImage(
                                 image = parentBmp,
-                                srcOffset = IntOffset(srcX, srcY),
+                                srcOffset = IntOffset((tx % 2) * 128, (ty % 2) * 128),
                                 srcSize = IntSize(128, 128),
                                 dstOffset = IntOffset(dstLeft, dstTop),
                                 dstSize = IntSize(dstW, dstH),
@@ -643,154 +606,47 @@ fun InteractiveZoneMapCanvas(
                 )
             }
 
-            // 3. Draw Secondary Saved Pins (when not in route mode)
-            if (!isRouteMapMode) {
-                allPins.forEach { sp ->
-                    if (activePin == null || sp.id != activePin.id) {
-                        val pos = latLngToScreen(sp.latitude, sp.longitude)
-                        if (pos.x in -40f..(canvasW + 40f) && pos.y in -40f..(canvasH + 40f)) {
-                            drawCircle(
-                                color = Color(0xFF3F3F46),
-                                radius = 6.dp.toPx(),
-                                center = pos
-                            )
-                            drawCircle(
-                                color = Color.White,
-                                radius = 6.dp.toPx(),
+            // 3. Historical Hotspot Heatmap Layer (translucent radial clusters from local historical records)
+            if (layerFilters.showHeatmap && hotspots.isNotEmpty()) {
+                hotspots.forEach { spot ->
+                    val pos = latLngToScreen(spot.latitude, spot.longitude)
+                    val heatRadiusPx = (46.dp.toPx() + spot.estimatedHeatScore * 52.dp.toPx())
+                    if (pos.x in -heatRadiusPx..(canvasW + heatRadiusPx) && pos.y in -heatRadiusPx..(canvasH + heatRadiusPx)) {
+                        drawCircle(
+                            brush = Brush.radialGradient(
+                                colors = listOf(
+                                    CrimsonNeon.copy(alpha = 0.34f * spot.estimatedHeatScore),
+                                    AmberWarning.copy(alpha = 0.16f * spot.estimatedHeatScore),
+                                    Color.Transparent
+                                ),
                                 center = pos,
-                                style = Stroke(width = 2.dp.toPx())
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 4. Draw Fuel Stations & Rest Stop POI Markers
-            if (!isRouteMapMode && poiPins.isNotEmpty()) {
-                poiPins.take(40).forEach { poi ->
-                    val pos = latLngToScreen(poi.latitude, poi.longitude)
-                    if (pos.x in -50f..(canvasW + 50f) && pos.y in -50f..(canvasH + 50f)) {
-                        val badgeColor = if (poi.category == StopPoiCategory.FUEL) {
-                            AmberWarning
-                        } else {
-                            Color(0xFF38BDF8)
-                        }
-                        drawCircle(
-                            color = badgeColor,
-                            radius = 9.dp.toPx(),
+                                radius = heatRadiusPx
+                            ),
+                            radius = heatRadiusPx,
                             center = pos
-                        )
-                        drawCircle(
-                            color = Color.White,
-                            radius = 9.dp.toPx(),
-                            center = pos,
-                            style = Stroke(width = 1.8.dp.toPx())
-                        )
-                        val symbol = if (poi.category == StopPoiCategory.FUEL) "F" else "P"
-                        drawContext.canvas.nativeCanvas.drawText(
-                            symbol,
-                            pos.x,
-                            pos.y + 3.5.dp.toPx(),
-                            badgeTextPaint
                         )
                     }
                 }
             }
 
-            // 5. Draw Delivery Route Polyline & Numbered Stop Badges (1..15)
-            if (deliveryStops.isNotEmpty()) {
-                val routePoints = mutableListOf<Offset>()
-                if (userLatitude != null && userLongitude != null) {
-                    routePoints.add(latLngToScreen(userLatitude, userLongitude))
-                }
-                deliveryStops.forEach { stop ->
-                    if (!stop.isDelivered) {
-                        routePoints.add(latLngToScreen(stop.latitude, stop.longitude))
-                    }
-                }
-                if (routePoints.size >= 2) {
-                    val routePath = Path().apply {
-                        moveTo(routePoints[0].x, routePoints[0].y)
-                        for (i in 1 until routePoints.size) {
-                            lineTo(routePoints[i].x, routePoints[i].y)
-                        }
-                    }
-                    drawPath(
-                        path = routePath,
-                        color = CrimsonRed.copy(alpha = 0.35f),
-                        style = Stroke(
-                            width = 8.dp.toPx(),
-                            cap = StrokeCap.Round,
-                            join = StrokeJoin.Round
-                        )
-                    )
-                    drawPath(
-                        path = routePath,
-                        color = CrimsonNeon,
-                        style = Stroke(
-                            width = 3.2.dp.toPx(),
-                            cap = StrokeCap.Round,
-                            join = StrokeJoin.Round
-                        )
-                    )
-                }
-
-                deliveryStops.forEachIndexed { idx, stop ->
-                    val pos = latLngToScreen(stop.latitude, stop.longitude)
-                    if (pos.x in -50f..(canvasW + 50f) && pos.y in -50f..(canvasH + 50f)) {
-                        val badgeRadius = 12.dp.toPx()
-                        val fillColor = if (stop.isDelivered) EmeraldSRank else CrimsonRed
-                        drawCircle(
-                            color = fillColor.copy(alpha = 0.35f),
-                            radius = badgeRadius + 4.dp.toPx(),
-                            center = pos
-                        )
-                        drawCircle(
-                            color = fillColor,
-                            radius = badgeRadius,
-                            center = pos
-                        )
-                        drawCircle(
-                            color = Color.White,
-                            radius = badgeRadius,
-                            center = pos,
-                            style = Stroke(width = 2.dp.toPx())
-                        )
-                        val label = if (stop.isDelivered) {
-                            "✓"
-                        } else {
-                            (if (stop.sequenceOrder > 0) stop.sequenceOrder else idx + 1).toString()
-                        }
-                        drawContext.canvas.nativeCanvas.drawText(
-                            label,
-                            pos.x,
-                            pos.y + 4.dp.toPx(),
-                            badgeTextPaint
-                        )
-                    }
-                }
-            }
-
-            // 6. Draw Active Pin & Translucent Crimson Radius Circle (0-30 km)
-            if (activePin != null && !isRouteMapMode) {
+            // 4. Active FixPoint Zone Radius Circle (0–30 km) + GPS Buffer Ring
+            if (layerFilters.showZoneRadius && activePin != null) {
                 val pinScreenPos = latLngToScreen(activePin.latitude, activePin.longitude)
                 val metersPerPx = WebMercatorMath.metersPerPixel(activePin.latitude, zoomLevel)
                 val radiusMeters = (animatedRadiusKm * 1000.0).coerceAtLeast(25.0)
                 val radiusPx = (radiusMeters / metersPerPx).toFloat().coerceIn(6f, 8000f)
 
                 val isOutside = zoneStatus == ZoneMonitorStatus.OUTSIDE_ZONE
-                val fillAlpha = if (isOutside) 0.32f else 0.22f
+                val fillAlpha = if (isOutside) 0.28f else 0.18f
                 val strokeColor = if (isOutside) Color(0xFFFF1744) else CrimsonNeon
 
-                // Translucent red radius circle
                 drawCircle(
                     color = CrimsonRed.copy(alpha = fillAlpha),
                     radius = radiusPx,
                     center = pinScreenPos
                 )
-                // Glowing outer border of radius circle
                 drawCircle(
-                    color = strokeColor.copy(alpha = 0.35f),
+                    color = strokeColor.copy(alpha = 0.30f),
                     radius = radiusPx,
                     center = pinScreenPos,
                     style = Stroke(width = 6.dp.toPx())
@@ -799,15 +655,12 @@ fun InteractiveZoneMapCanvas(
                     color = strokeColor,
                     radius = radiusPx,
                     center = pinScreenPos,
-                    style = Stroke(width = 2.2.dp.toPx())
+                    style = Stroke(width = 2.dp.toPx())
                 )
-
-                // GPS Buffer ring (dashed amber)
                 if (gpsBufferMeters > 0) {
-                    val totalBufferPx =
-                        ((radiusMeters + gpsBufferMeters) / metersPerPx).toFloat().coerceIn(8f, 8200f)
+                    val totalBufferPx = ((radiusMeters + gpsBufferMeters) / metersPerPx).toFloat().coerceIn(8f, 8200f)
                     drawCircle(
-                        color = AmberWarning.copy(alpha = 0.85f),
+                        color = AmberWarning.copy(alpha = 0.78f),
                         radius = totalBufferPx,
                         center = pinScreenPos,
                         style = Stroke(
@@ -816,349 +669,292 @@ fun InteractiveZoneMapCanvas(
                         )
                     )
                 }
+            }
 
-                // Active Pin Marker
-                drawCircle(
-                    color = CrimsonNeon.copy(alpha = 0.35f),
-                    radius = 15.dp.toPx(),
-                    center = pinScreenPos
-                )
-                drawCircle(
-                    color = CrimsonRed,
-                    radius = 9.dp.toPx(),
-                    center = pinScreenPos
-                )
-                drawCircle(
-                    color = Color.White,
-                    radius = 9.dp.toPx(),
-                    center = pinScreenPos,
-                    style = Stroke(width = 2.5.dp.toPx())
-                )
-                drawCircle(
-                    color = Color.White,
-                    radius = 3.dp.toPx(),
-                    center = pinScreenPos
-                )
+            // 5. Fuel Stations from Overpass (optional layer)
+            if (layerFilters.showFuelStations && poiPins.isNotEmpty()) {
+                poiPins.take(30).forEach { poi ->
+                    val pos = latLngToScreen(poi.latitude, poi.longitude)
+                    if (pos.x in -40f..(canvasW + 40f) && pos.y in -40f..(canvasH + 40f)) {
+                        val badgeColor = if (poi.category == StopPoiCategory.FUEL) AmberWarning else CyanTelemetry
+                        drawCircle(color = badgeColor, radius = 8.dp.toPx(), center = pos)
+                        drawCircle(color = Color.White, radius = 8.dp.toPx(), center = pos, style = Stroke(1.6.dp.toPx()))
+                        drawContext.canvas.nativeCanvas.drawText(
+                            if (poi.category == StopPoiCategory.FUEL) "F" else "P",
+                            pos.x,
+                            pos.y + 3.5.dp.toPx(),
+                            badgeTextPaint
+                        )
+                    }
+                }
+            }
 
-                // Pin Name Tooltip Pill above pin
-                if (activePin.name.isNotBlank()) {
-                    val textWidth = labelPaint.measureText(activePin.name)
-                    val pillW = textWidth + 16.dp.toPx()
+            // 6. Saved Pins filtered by category (FixPoint, Hotzone, Restaurant, Fuel, Rest)
+            val topHotspotId = hotspots.firstOrNull()?.id
+            allPins.forEach { pin ->
+                val isActive = activePin?.id == pin.id
+                val visible = isActive || when (pin.category) {
+                    PinCategory.FIXPOINT -> layerFilters.showFixPoints
+                    PinCategory.HOTZONE -> layerFilters.showHotzones
+                    PinCategory.RESTAURANT -> layerFilters.showRestaurants
+                    PinCategory.FUEL -> layerFilters.showFuelStations
+                    PinCategory.REST_AREA -> layerFilters.showFixPoints
+                }
+                if (!visible) return@forEach
+
+                val pos = latLngToScreen(pin.latitude, pin.longitude)
+                if (pos.x !in -60f..(canvasW + 60f) || pos.y !in -60f..(canvasH + 60f)) return@forEach
+
+                val markerColor = when {
+                    isActive -> CrimsonRed
+                    pin.category == PinCategory.HOTZONE -> VioletInsight
+                    pin.category == PinCategory.RESTAURANT -> AmberWarning
+                    pin.category == PinCategory.FUEL -> CyanTelemetry
+                    else -> Color(0xFF475569)
+                }
+                val symbol = when {
+                    isActive -> "★"
+                    pin.category == PinCategory.HOTZONE -> "H"
+                    pin.category == PinCategory.RESTAURANT -> "R"
+                    pin.category == PinCategory.FUEL -> "F"
+                    else -> "P"
+                }
+
+                // Recommended Next Destination halo
+                if (pin.id == topHotspotId) {
+                    drawCircle(
+                        color = EmeraldSRank.copy(alpha = 0.25f),
+                        radius = 18.dp.toPx(),
+                        center = pos
+                    )
+                    drawCircle(
+                        color = EmeraldSRank,
+                        radius = 15.dp.toPx(),
+                        center = pos,
+                        style = Stroke(
+                            width = 1.6.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f)
+                        )
+                    )
+                }
+
+                val markerRadius = if (isActive) 11.dp.toPx() else 9.dp.toPx()
+                if (isActive) {
+                    drawCircle(color = CrimsonNeon.copy(alpha = 0.32f), radius = 17.dp.toPx(), center = pos)
+                }
+                drawCircle(color = markerColor, radius = markerRadius, center = pos)
+                drawCircle(color = Color.White, radius = markerRadius, center = pos, style = Stroke(2.dp.toPx()))
+                drawContext.canvas.nativeCanvas.drawText(symbol, pos.x, pos.y + 3.5.dp.toPx(), badgeTextPaint)
+
+                // Tooltip pill with name & distance from rider
+                if (isActive || pin.id == topHotspotId || zoomLevel >= 12.5) {
+                    val distLabel = if (userLatitude != null && userLongitude != null) {
+                        val d = GeoMath.haversineMeters(userLatitude, userLongitude, pin.latitude, pin.longitude)
+                        " • ${GeoMath.formatShortZoneDistanceTh(d)}"
+                    } else ""
+                    val labelText = pin.name.take(16) + distLabel
+                    val tw = labelPaint.measureText(labelText)
+                    val pillW = tw + 16.dp.toPx()
                     val pillH = 20.dp.toPx()
-                    val pillTopLeft = Offset(
-                        x = pinScreenPos.x - pillW / 2f,
-                        y = pinScreenPos.y - 16.dp.toPx() - pillH
-                    )
+                    val pillTopLeft = Offset(pos.x - pillW / 2f, pos.y - markerRadius - 6.dp.toPx() - pillH)
                     drawRoundRect(
-                        color = Color(0xEB0F0A0E),
+                        color = Color(0xEB0E0A11),
                         topLeft = pillTopLeft,
                         size = Size(pillW, pillH),
-                        cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                        cornerRadius = CornerRadius(8.dp.toPx(), 8.dp.toPx())
                     )
                     drawRoundRect(
-                        color = CrimsonNeon,
+                        color = if (isActive) CrimsonNeon else markerColor.copy(alpha = 0.8f),
                         topLeft = pillTopLeft,
                         size = Size(pillW, pillH),
-                        cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx()),
-                        style = Stroke(width = 1.dp.toPx())
+                        cornerRadius = CornerRadius(8.dp.toPx(), 8.dp.toPx()),
+                        style = Stroke(1.dp.toPx())
                     )
                     drawContext.canvas.nativeCanvas.drawText(
-                        activePin.name,
-                        pinScreenPos.x,
+                        labelText,
+                        pos.x,
                         pillTopLeft.y + pillH * 0.72f,
-                        labelPaint
+                        if (isActive) labelPaint else subLabelPaint
                     )
                 }
             }
 
-            // 7. Draw Real User GPS Position & Dashed Line to Active Pin
+            // 7. Rider Live GPS Position & Dashed Link to Active Pin
             if (userLatitude != null && userLongitude != null) {
                 val userPos = latLngToScreen(userLatitude, userLongitude)
                 val uColor = if (zoneStatus == ZoneMonitorStatus.OUTSIDE_ZONE) CrimsonNeon else EmeraldSRank
-
-                if (activePin != null && !isRouteMapMode) {
+                if (activePin != null) {
                     val pinPos = latLngToScreen(activePin.latitude, activePin.longitude)
                     drawLine(
-                        color = uColor.copy(alpha = 0.88f),
+                        color = uColor.copy(alpha = 0.85f),
                         start = pinPos,
                         end = userPos,
                         strokeWidth = 2.dp.toPx(),
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(14f, 10f), 0f)
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f), 0f)
                     )
                 }
-
-                drawCircle(
-                    color = uColor.copy(alpha = 0.28f),
-                    radius = 13.dp.toPx(),
-                    center = userPos
-                )
-                drawCircle(
-                    color = uColor,
-                    radius = 6.5.dp.toPx(),
-                    center = userPos
-                )
-                drawCircle(
-                    color = Color.White,
-                    radius = 6.5.dp.toPx(),
-                    center = userPos,
-                    style = Stroke(width = 2.2.dp.toPx())
-                )
+                drawCircle(color = uColor.copy(alpha = 0.25f), radius = 15.dp.toPx(), center = userPos)
+                drawCircle(color = uColor, radius = 7.dp.toPx(), center = userPos)
+                drawCircle(color = Color.White, radius = 7.dp.toPx(), center = userPos, style = Stroke(2.2.dp.toPx()))
             }
         }
 
-        // Top-Left Map HUD Badge
-        if (!isRouteMapMode) {
+        // Right-side Floating Map Zoom & Recenter Controls
+        if (showBuiltInControls) {
             Column(
                 modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(10.dp)
-                    .clip(PrecisionButtonShape)
-                    .background(Color(0xE60D0A0F))
-                    .border(1.dp, CrimsonBorderGlow, PrecisionButtonShape)
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                MapControlCircleButton(
+                    label = "+",
+                    contentDesc = "ขยายแผนที่",
+                    testTag = "btn_map_zoom_in",
+                    onClick = { zoomLevel = (zoomLevel + 1.0).coerceIn(3.0, 18.8) }
+                )
+                MapControlCircleButton(
+                    label = "−",
+                    contentDesc = "ย่อแผนที่",
+                    testTag = "btn_map_zoom_out",
+                    onClick = { zoomLevel = (zoomLevel - 1.0).coerceIn(3.0, 18.8) }
+                )
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xEB15121B))
+                        .border(1.dp, CrimsonNeon.copy(alpha = 0.7f), CircleShape)
+                        .clickable { fitMapBoundsToTarget() }
+                        .testTag("btn_map_auto_fit")
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Place,
-                        contentDescription = null,
+                        imageVector = Icons.Default.CenterFocusStrong,
+                        contentDescription = "จัดกึ่งกลางโซน",
                         tint = CrimsonNeon,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Text(
-                        text = activePin?.name ?: "ไม่มีหมุดโซน",
-                        style = MaterialTheme.typography.labelLarge.copy(fontSize = 12.sp),
-                        color = TextHudPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Text(
-                    text = String.format(
-                        Locale.US,
-                        "รัศมี %.1f กม. • เผื่อ %d ม.",
-                        radiusKm,
-                        gpsBufferMeters
-                    ),
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
-                    color = CrimsonNeon
-                )
-            }
-        } else {
-            val pendingCount = deliveryStops.count { !it.isDelivered }
-            Column(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(10.dp)
-                    .clip(PrecisionButtonShape)
-                    .background(Color(0xE60D0A0F))
-                    .border(1.dp, CrimsonBorderGlow, PrecisionButtonShape)
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    text = "จุดส่งคงเหลือ $pendingCount/${deliveryStops.size} จุด",
-                    style = MaterialTheme.typography.labelLarge.copy(fontSize = 12.sp),
-                    color = TextHudPrimary,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "แตะแผนที่เพื่อเพิ่มจุดส่ง",
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
-                    color = CrimsonNeon
-                )
-            }
-        }
-
-        // Top-Right Controls: Zoom In / Out / Auto-Fit
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(10.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(PrecisionButtonShape)
-                    .background(Color(0xE6120D11))
-                    .border(1.dp, CrimsonBorderGlow, PrecisionButtonShape)
-                    .clickable {
-                        zoomLevel = (zoomLevel + 1.0).coerceIn(3.0, 18.8)
-                    }
-                    .testTag("btn_map_zoom_in")
-            ) {
-                Text("+", color = TextHudPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            }
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(PrecisionButtonShape)
-                    .background(Color(0xE6120D11))
-                    .border(1.dp, CrimsonBorderGlow, PrecisionButtonShape)
-                    .clickable {
-                        zoomLevel = (zoomLevel - 1.0).coerceIn(3.0, 18.8)
-                    }
-                    .testTag("btn_map_zoom_out")
-            ) {
-                Text("−", color = TextHudPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            }
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(PrecisionButtonShape)
-                    .background(Color(0xE6120D11))
-                    .border(1.dp, CrimsonNeon, PrecisionButtonShape)
-                    .clickable {
-                        fitMapBoundsToTarget()
-                    }
-                    .testTag("btn_map_auto_fit")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.CenterFocusStrong,
-                    contentDescription = "ซูมพอดีขอบเขต",
-                    tint = CrimsonNeon,
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-        }
-
-        // Error Banner when tiles fail to load
-        if (tileErrorMessageTh != null) {
-            Row(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = 14.dp)
-                    .fillMaxWidth()
-                    .clip(PrecisionButtonShape)
-                    .background(Color(0xF21A090D))
-                    .border(1.5.dp, CrimsonNeon, PrecisionButtonShape)
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                    .testTag("tile_load_error_banner"),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.WarningAmber,
-                        contentDescription = null,
-                        tint = AmberWarning,
                         modifier = Modifier.size(20.dp)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = tileErrorMessageTh!!,
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
-                        color = TextHudPrimary,
-                        fontWeight = FontWeight.SemiBold
-                    )
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                Box(
+                if (userLatitude != null && userLongitude != null) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xEB15121B))
+                            .border(1.dp, EmeraldSRank.copy(alpha = 0.7f), CircleShape)
+                            .clickable {
+                                centerLat = userLatitude
+                                centerLng = userLongitude
+                                zoomLevel = 15.2
+                            }
+                            .testTag("btn_map_recenter_gps")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MyLocation,
+                            contentDescription = "ไปยังตำแหน่งฉัน",
+                            tint = EmeraldSRank,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Offline / Tile Error Pill (compact, non-blocking)
+        if (tileErrorMessageTh != null && loadedTileSuccessCount == 0) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 64.dp, start = 14.dp, end = 14.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xEE180D13))
+                    .border(1.dp, AmberWarning.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .testTag("tile_load_error_banner"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.WarningAmber,
+                    contentDescription = null,
+                    tint = AmberWarning,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = tileErrorMessageTh!!,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextHudPrimary,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "ลองโหลดแผนที่ใหม่",
+                    tint = CrimsonNeon,
                     modifier = Modifier
-                        .clip(PrecisionButtonShape)
-                        .background(CrimsonRed)
+                        .size(20.dp)
                         .clickable {
                             tileErrorMessageTh = checkNetworkStatusErrorTh(context)
                             reloadTrigger++
                         }
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
                         .testTag("btn_retry_load_tiles")
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "ลองโหลดแผนที่ใหม่",
-                            tint = Color.White,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "ลองใหม่",
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-        }
-
-        // Bottom Map Overlay: Live User GPS Position, Distance from Pin & OpenStreetMap Attribution
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            if (!isRouteMapMode) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(PrecisionButtonShape)
-                        .background(Color(0xE609080D))
-                        .border(1.dp, CrimsonBorderGlow, PrecisionButtonShape)
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.MyLocation,
-                            contentDescription = null,
-                            tint = if (userLatitude != null) EmeraldSRank else TextHudMuted,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        Text(
-                            text = if (userLatitude != null && userLongitude != null) {
-                                String.format(Locale.US, "%.5f, %.5f", userLatitude, userLongitude)
-                            } else {
-                                "พิกัดผู้ใช้: —"
-                            },
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                            color = TextHudSecondary
-                        )
-                    }
-
-                    Text(
-                        text = "ห่างหมุด: ${GeoMath.formatShortZoneDistanceTh(distanceFromPinMeters)}",
-                        style = MaterialTheme.typography.labelLarge.copy(fontSize = 12.sp),
-                        color = when (zoneStatus) {
-                            ZoneMonitorStatus.INSIDE_ZONE -> EmeraldSRank
-                            ZoneMonitorStatus.OUTSIDE_ZONE -> CrimsonNeon
-                            else -> TextHudPrimary
-                        },
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.testTag("map_live_distance_readout")
-                    )
-                }
-            }
-
-            // Required OpenStreetMap Attribution Badge ("© OpenStreetMap contributors")
-            Box(
-                modifier = Modifier
-                    .align(Alignment.End)
-                    .clip(PrecisionButtonShape)
-                    .background(Color(0xD909080D))
-                    .padding(horizontal = 7.dp, vertical = 2.dp)
-                    .testTag(if (isRouteMapMode) "route_osm_attribution_badge" else "osm_attribution_badge")
-            ) {
-                Text(
-                    text = "© OpenStreetMap contributors",
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.5.sp),
-                    color = TextHudSecondary
                 )
             }
         }
+
+        // OpenStreetMap Attribution Badge (Mandatory & Always Visible)
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 10.dp, bottom = 10.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xD90B090E))
+                .border(1.dp, HairlineBorder, RoundedCornerShape(8.dp))
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .testTag("osm_attribution_badge"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = "© OpenStreetMap contributors",
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                color = TextHudSecondary
+            )
+            if (distanceFromPinMeters != null) {
+                Text(
+                    text = "• ${GeoMath.formatShortZoneDistanceTh(distanceFromPinMeters)}",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    color = if (zoneStatus == ZoneMonitorStatus.OUTSIDE_ZONE) CrimsonNeon else EmeraldSRank,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MapControlCircleButton(
+    label: String,
+    contentDesc: String,
+    testTag: String,
+    onClick: () -> Unit
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(Color(0xEB15121B))
+            .border(1.dp, CrimsonBorderGlow, CircleShape)
+            .clickable(onClick = onClick)
+            .testTag(testTag)
+    ) {
+        Text(
+            text = label,
+            color = TextHudPrimary,
+            fontWeight = FontWeight.Bold,
+            fontSize = 18.sp
+        )
     }
 }

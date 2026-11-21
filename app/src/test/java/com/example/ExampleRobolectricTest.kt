@@ -1,25 +1,32 @@
 package com.example
 
+import android.app.Activity
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.location.Location
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
-import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performScrollToNode
 import androidx.test.core.app.ApplicationProvider
-import com.example.model.CoordinateFormat
-import com.example.model.MeasurementUnit
-import com.example.model.RainLeadTimeOption
-import com.example.model.StopPoiCategory
-import com.example.model.UpdateFrequency
-import com.example.model.ZoneAlertTone
+import com.example.ai.MlKitOrderOcrEngine
+import com.example.ai.OcrScanOutcome
+import com.example.model.AppScreen
+import com.example.model.EarningsPeriod
+import com.example.model.EarningsRecordType
+import com.example.model.OrderInputSource
+import com.example.model.PinCategory
+import com.example.model.ScreenReaderState
 import com.example.model.ZoneMonitorStatus
 import com.example.ui.theme.MyApplicationTheme
 import com.example.viewmodel.FixPointViewModel
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -37,12 +44,11 @@ class ExampleRobolectricTest {
     @Test
     fun `read string from context`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val appName = context.getString(R.string.app_name)
-        assertEquals("Crimson FixPoint", appName)
+        assertEquals("Crimson FixPoint", context.getString(R.string.app_name))
     }
 
     @Test
-    fun `test all 4 tabs pinning radius geofence alerts route optimizer breakeven fuel poi and weather end to end`() {
+    fun `test 5 destination navigation work session gps zone monitoring and smart map regression`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val viewModel = FixPointViewModel()
         viewModel.initialize(context)
@@ -54,140 +60,143 @@ class ExampleRobolectricTest {
         }
         composeTestRule.waitForIdle()
 
-        // 1. Verify Main Screen, Central Power Button, and Weather Rain Forecast Card exist
-        composeTestRule.onNodeWithTag("main_power_toggle_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("zone_status_banner_panel").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("weather_rain_forecast_card").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("readout_latitude").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("readout_longitude").performScrollTo().assertIsDisplayed()
+        // 1. Dashboard starts clean: Hero card visible, NO "ไม่มีหมุดโซน" alert banner
+        assertEquals(AppScreen.DASHBOARD, viewModel.uiState.value.currentScreen)
+        composeTestRule.onNodeWithTag("dashboard_earnings_hero_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("dashboard_active_zone_card").assertDoesNotExist()
 
-        // 2. Deliver a real Location fix from sensor and pin current GPS location
-        val gpsFix = Location("gps").apply {
+        // Start & stop work session from Dashboard
+        composeTestRule.onNodeWithTag("btn_toggle_work_session").performClick()
+        composeTestRule.waitForIdle()
+        assertNotNull(viewModel.uiState.value.activeWorkSession)
+
+        // Deliver real GPS fix, pin current location, verify inside-zone then out-of-zone + mute
+        val gpsInside = Location("gps").apply {
             latitude = 13.756331
             longitude = 100.501762
             accuracy = 2.5f
-            altitude = 18.0
-            speed = 4.5f
-            bearing = 90f
+            speed = 5.0f
             time = System.currentTimeMillis()
         }
-        viewModel.onHardwareSensorFixReceived(gpsFix)
+        viewModel.onHardwareSensorFixReceived(gpsInside)
+        assertTrue(viewModel.saveCurrentLocation("โซนสยาม", false, PinCategory.FIXPOINT))
+        viewModel.setZoneRadiusKm(1.0f)
         composeTestRule.waitForIdle()
-
-        // Pin Method 1: Save current GPS location from Home Screen
-        composeTestRule.onNodeWithTag("btn_save_location").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("dialog_save_location").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("input_save_location_name").performScrollTo().performTextInput("โซนสยาม")
-        composeTestRule.onNodeWithTag("btn_confirm_save_location").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-
-        assertEquals(1, viewModel.uiState.value.savedLocations.size)
         assertEquals(ZoneMonitorStatus.INSIDE_ZONE, viewModel.uiState.value.zoneStatus)
+        composeTestRule.onNodeWithTag("dashboard_active_zone_card").assertIsDisplayed()
 
-        // 3. Navigate to Pin & Zone Screen (หมุดและโซน) and test Leaflet Map, OSM Attribution, Radius Presets & Fuel/Rest POIs
-        composeTestRule.onNodeWithTag("nav_tab_saved_locations").performClick()
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("interactive_zone_map_canvas").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("osm_attribution_badge").assertIsDisplayed()
-
-        composeTestRule.onNodeWithTag("btn_radius_preset_1").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-        assertEquals(1.0f, viewModel.uiState.value.zoneRadiusKm, 0.01f)
-
-        composeTestRule.onNodeWithTag("input_zone_radius_km").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("btn_apply_radius_input").performScrollTo().assertIsDisplayed().performClick()
-        composeTestRule.waitForIdle()
-
-        // 4. Navigate to 4th Tab: งานและต้นทุน (WORK_AND_COST) and test Route Optimizer, Daily Break-Even, and Fuel Estimator
-        composeTestRule.onNodeWithTag("nav_tab_work_and_cost").performClick()
-        composeTestRule.waitForIdle()
-
-        // Add delivery stops and run Nearest Neighbor + 2-opt route optimization
-        viewModel.addDeliveryStop("จุดส่งที่ 1 (ไกล)", 13.7900, 100.5017)
-        viewModel.addDeliveryStop("จุดส่งที่ 2 (ใกล้)", 13.7600, 100.5017)
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("btn_optimize_delivery_route").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-        assertEquals("จุดส่งที่ 2 (ใกล้)", viewModel.uiState.value.deliveryStops.first().name)
-
-        // Mark first stop delivered
-        val firstStopId = viewModel.uiState.value.deliveryStops.first().id
-        composeTestRule.onNodeWithTag("btn_toggle_delivered_$firstStopId").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-        assertTrue(viewModel.uiState.value.deliveryStops.first { it.id == firstStopId }.isDelivered)
-
-        // Test Daily Break-Even & Profit
-        viewModel.updateFixedDailyCosts(100.0)
-        viewModel.addCustomExpense("ค่าทางด่วน", 50.0)
-        viewModel.addJobIncome("งานส่งด่วน #1", 200.0)
-        composeTestRule.waitForIdle()
-        assertTrue(viewModel.uiState.value.breakEvenState.hasReachedBreakEven)
-        assertEquals(50.0, viewModel.uiState.value.breakEvenState.netProfitBaht, 0.01)
-
-        // Test Fuel Estimator & Refuel button
-        viewModel.updateFuelSettings(tankCapacityLiters = 5.5f, consumptionKmPerLiter = 40.0f, lowFuelWarningLiters = 1.0f)
-        composeTestRule.onNodeWithTag("btn_refuel_full_tank").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-        assertEquals(0.0, viewModel.uiState.value.fuelState.distanceDrivenSinceRefuelKm, 0.001)
-
-        // 5. Test Out-of-Zone Alert & Mute Button on Home Screen, then Return-to-Zone
-        composeTestRule.onNodeWithTag("nav_tab_home").performClick()
-        composeTestRule.waitForIdle()
-
-        val outsideFix = Location("gps").apply {
+        val gpsOutside = Location("gps").apply {
             latitude = 13.795000
             longitude = 100.501762
             accuracy = 2.0f
             time = System.currentTimeMillis() + 5000L
         }
-        viewModel.onHardwareSensorFixReceived(outsideFix)
+        viewModel.onHardwareSensorFixReceived(gpsOutside)
         composeTestRule.waitForIdle()
-
         assertEquals(ZoneMonitorStatus.OUTSIDE_ZONE, viewModel.uiState.value.zoneStatus)
-        assertTrue(viewModel.uiState.value.excessDistanceMeters > 100.0)
-
-        composeTestRule.onNodeWithTag("btn_mute_zone_alert").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("btn_dashboard_mute_zone").performClick()
         composeTestRule.waitForIdle()
         assertTrue(viewModel.uiState.value.isZoneAlertMuted)
 
-        val returnFix = Location("gps").apply {
-            latitude = 13.756331
-            longitude = 100.501762
-            accuracy = 1.5f
-            time = System.currentTimeMillis() + 15000L
+        // 2. Navigate to AI Assistant (Destination 2)
+        composeTestRule.onNodeWithTag("nav_tab_ai_assistant").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(AppScreen.AI_ASSISTANT, viewModel.uiState.value.currentScreen)
+        composeTestRule.onNodeWithTag("screen_reader_control_card").assertIsDisplayed()
+
+        // 3. Navigate to Smart Map (Destination 3) — verify OSM map & attribution
+        composeTestRule.onNodeWithTag("nav_tab_smart_map").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(AppScreen.SMART_MAP, viewModel.uiState.value.currentScreen)
+        composeTestRule.onNodeWithTag("smart_map_osm_canvas").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("osm_attribution_badge").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("chip_layer_heatmap").assertIsDisplayed()
+
+        // 4. Navigate to Earnings (Destination 4)
+        composeTestRule.onNodeWithTag("nav_tab_earnings").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(AppScreen.EARNINGS, viewModel.uiState.value.currentScreen)
+        composeTestRule.onNodeWithTag("earnings_summary_hero_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("earnings_period_weekly").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(EarningsPeriod.WEEKLY, viewModel.uiState.value.smartEarningsState.selectedPeriod)
+
+        // 5. Navigate to Profile (Destination 5)
+        composeTestRule.onNodeWithTag("nav_tab_profile").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(AppScreen.PROFILE, viewModel.uiState.value.currentScreen)
+        composeTestRule.onNodeWithTag("profile_settings_screen_list")
+            .performScrollToNode(hasTestTag("btn_save_rider_profile"))
+        composeTestRule.onNodeWithTag("btn_save_rider_profile").assertIsDisplayed()
+
+        // Stop work session cleanly
+        viewModel.stopWorkSession()
+        assertTrue(viewModel.uiState.value.activeWorkSession == null)
+    }
+
+    @Test
+    fun `test screen reader consent permission denied ocr failure protected screen and manual order edit save`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val viewModel = FixPointViewModel()
+        viewModel.initialize(context)
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                CrimsonFixPointApp(viewModel = viewModel)
+            }
         }
-        viewModel.onHardwareSensorFixReceived(returnFix)
-        composeTestRule.waitForIdle()
-        assertEquals(ZoneMonitorStatus.INSIDE_ZONE, viewModel.uiState.value.zoneStatus)
-        assertFalse(viewModel.uiState.value.isZoneAlertMuted)
-
-        // 6. Navigate to Settings Screen and test Zone Alert, Unit, and Rain Alert Settings
-        composeTestRule.onNodeWithTag("nav_tab_settings").performClick()
         composeTestRule.waitForIdle()
 
-        composeTestRule.onNodeWithTag("setting_tone_high_pulse").performScrollTo().performClick()
+        // Navigate to AI Assistant
+        composeTestRule.onNodeWithTag("nav_tab_ai_assistant").performClick()
         composeTestRule.waitForIdle()
-        assertEquals(ZoneAlertTone.HIGH_PULSE, viewModel.uiState.value.alertTone)
 
-        composeTestRule.onNodeWithTag("setting_rain_lead_60").performScrollTo().performClick()
+        // 1. Clicking Start Screen Reader before consent MUST open explicit consent dialog
+        composeTestRule.onNodeWithTag("btn_start_screen_reader").performClick()
         composeTestRule.waitForIdle()
-        assertEquals(RainLeadTimeOption.MIN_60, viewModel.uiState.value.rainForecast.leadTimeOption)
+        assertTrue(viewModel.uiState.value.showScreenReaderConsentDialog)
+        composeTestRule.onNodeWithTag("btn_confirm_screen_reader_consent").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_cancel_screen_reader_consent").performClick()
+        composeTestRule.waitForIdle()
+        assertFalse(viewModel.uiState.value.showScreenReaderConsentDialog)
 
-        composeTestRule.onNodeWithTag("btn_rain_prob_70").performScrollTo().performClick()
+        // 2. Denied MediaProjection result sets PERMISSION_DENIED and shows fallback guidance
+        viewModel.onMediaProjectionPermissionResult(context, Activity.RESULT_CANCELED, null)
         composeTestRule.waitForIdle()
-        assertEquals(70, viewModel.uiState.value.rainForecast.probabilityThresholdPercent)
+        assertEquals(ScreenReaderState.PERMISSION_DENIED, viewModel.uiState.value.screenReaderState)
+        composeTestRule.onNodeWithTag("ocr_error_banner").assertIsDisplayed()
 
-        composeTestRule.onNodeWithTag("setting_unit_imperial").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-        assertEquals(MeasurementUnit.IMPERIAL, viewModel.uiState.value.measurementUnit)
+        // 3. Protected FLAG_SECURE (all-black) bitmap must be detected cleanly without crash
+        val blackBitmap = Bitmap.createBitmap(120, 200, Bitmap.Config.ARGB_8888)
+        blackBitmap.eraseColor(Color.BLACK)
+        val outcome = runBlocking {
+            MlKitOrderOcrEngine.recognizeBitmap(blackBitmap, OrderInputSource.SCREEN_READER)
+        }
+        assertTrue(outcome is OcrScanOutcome.ProtectedOrBlankScreen)
+        blackBitmap.recycle()
 
-        composeTestRule.onNodeWithTag("setting_freq_high_precision").performScrollTo().performClick()
+        // 4. OCR / manual text parse + user correction + save to earnings offline
+        viewModel.parseManualOrPastedOrderText("GrabFood ค่าส่ง ฿82 รวม 3.8 กม. ไปรับ 0.6 กม. 18 นาที")
         composeTestRule.waitForIdle()
-        assertEquals(UpdateFrequency.HIGH_PRECISION, viewModel.uiState.value.updateFrequency)
+        assertNotNull(viewModel.uiState.value.currentOrderAnalysis)
+        composeTestRule.onNodeWithTag("ai_assistant_screen_list")
+            .performScrollToNode(hasTestTag("order_analysis_result_card"))
+        composeTestRule.onNodeWithTag("order_analysis_result_card").assertIsDisplayed()
 
-        composeTestRule.onNodeWithTag("setting_coord_dms").performScrollTo().performClick()
+        // User corrects payout before saving
+        viewModel.updateOrderDraftFields(payoutText = "90", pickupName = "ร้านข้าวมันไก่", dropoffName = "อโศก")
         composeTestRule.waitForIdle()
-        assertEquals(CoordinateFormat.DMS, viewModel.uiState.value.coordinateFormat)
+        assertTrue(viewModel.uiState.value.currentOrderDraft.wasUserCorrected)
+        assertEquals(90.0, viewModel.uiState.value.currentOrderAnalysis!!.grossPayoutBaht, 0.001)
+
+        // Save analyzed order + log to earnings
+        assertTrue(viewModel.saveCurrentAnalyzedOrder(alsoLogToEarnings = true))
+        composeTestRule.waitForIdle()
+        assertEquals(1, viewModel.uiState.value.analyzedOrders.size)
+        assertTrue(
+            viewModel.uiState.value.smartEarningsState.transactions.any {
+                it.type == EarningsRecordType.INCOME && it.amountBaht == 90.0
+            }
+        )
     }
 }

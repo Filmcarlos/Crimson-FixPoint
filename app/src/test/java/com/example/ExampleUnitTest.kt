@@ -3,12 +3,10 @@ package com.example
 import com.example.model.CoordinateFormat
 import com.example.model.CustomExpenseItem
 import com.example.model.DailyBreakEvenState
-import com.example.model.DeliveryStopItem
 import com.example.model.FuelEstimateState
 import com.example.model.GeoMath
 import com.example.model.JobIncomeEntry
 import com.example.model.MeasurementUnit
-import com.example.model.RouteOptimizer
 import com.example.model.SavedLocationItem
 import com.example.model.StopPoiCategory
 import com.example.model.StopPoiItem
@@ -89,28 +87,6 @@ class ExampleUnitTest {
 
         assertTrue(abs(smoothedLat - anchorLat) < abs(spikeLat - anchorLat) * 0.25)
         assertTrue(abs(smoothedLng - anchorLng) < abs(spikeLng - anchorLng) * 0.25)
-    }
-
-    @Test
-    fun routeOptimizer_nearestNeighborAndTwoOpt_ordersShortestHaversineRoute() {
-        val startLat = 13.7500
-        val startLng = 100.5000
-        // Create stops out of order along a north-bound line
-        val stops = listOf(
-            DeliveryStopItem(id = "S3", name = "จุดที่ไกลสุด", latitude = 13.7900, longitude = 100.5000),
-            DeliveryStopItem(id = "S1", name = "จุดที่ใกล้สุด", latitude = 13.7550, longitude = 100.5000),
-            DeliveryStopItem(id = "S2", name = "จุดกลาง", latitude = 13.7700, longitude = 100.5000)
-        )
-
-        val result = RouteOptimizer.optimizeStops(startLat, startLng, stops)
-        assertEquals(3, result.orderedStops.size)
-        assertEquals("S1", result.orderedStops[0].id)
-        assertEquals(1, result.orderedStops[0].sequenceOrder)
-        assertEquals("S2", result.orderedStops[1].id)
-        assertEquals(2, result.orderedStops[1].sequenceOrder)
-        assertEquals("S3", result.orderedStops[2].id)
-        assertEquals(3, result.orderedStops[2].sequenceOrder)
-        assertTrue(result.totalPendingDistanceKm > 4.0 && result.totalPendingDistanceKm < 5.0)
     }
 
     @Test

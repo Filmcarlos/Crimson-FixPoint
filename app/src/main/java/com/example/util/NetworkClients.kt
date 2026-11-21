@@ -10,11 +10,7 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import java.text.SimpleDateFormat
 import java.util.Locale
-import java.util.TimeZone
-import kotlin.math.max
-import kotlin.math.roundToInt
 
 sealed class OverpassFuelResult {
     data class Success(
@@ -25,19 +21,6 @@ sealed class OverpassFuelResult {
     data class Failure(
         val reasonTh: String
     ) : OverpassFuelResult()
-}
-
-data class OpenMeteoParsedForecast(
-    val willRainSoon: Boolean,
-    val minutesUntilRain: Int?,
-    val probabilityPercent: Int,
-    val precipitationMm: Double,
-    val fetchedAtMillis: Long
-)
-
-sealed class OpenMeteoResult {
-    data class Success(val forecast: OpenMeteoParsedForecast) : OpenMeteoResult()
-    data class Failure(val reasonTh: String) : OpenMeteoResult()
 }
 
 object NetworkClients {
@@ -166,130 +149,5 @@ object NetworkClients {
             )
         }
         return results
-    }
-
-    /**
-     * Queries Open-Meteo (https://api.open-meteo.com/v1/forecast) without any API key.
-     * Requests precipitation, precipitation_probability, minutely_15, timezone=auto.
-     * Never returns mock/fake data.
-     */
-    suspend fun fetchRainForecastOpenMeteo(
-        latitude: Double,
-        longitude: Double,
-        probabilityThresholdPercent: Int,
-        leadTimeWindowMinutes: Int
-    ): OpenMeteoResult = withContext(Dispatchers.IO) {
-        val latStr = String.format(Locale.US, "%.5f", latitude)
-        val lonStr = String.format(Locale.US, "%.5f", longitude)
-        val urlStr =
-            "https://api.open-meteo.com/v1/forecast?latitude=$latStr&longitude=$lonStr" +
-                "&minutely_15=precipitation,precipitation_probability" +
-                "&timezone=auto&forecast_days=1"
-
-        try {
-            val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 10_000
-                readTimeout = 10_000
-                setRequestProperty("User-Agent", APP_USER_AGENT)
-                setRequestProperty("Accept", "application/json")
-            }
-            try {
-                val code = conn.responseCode
-                if (code != HttpURLConnection.HTTP_OK) {
-                    return@withContext OpenMeteoResult.Failure("ดึงพยากรณ์ไม่ได้ (HTTP $code)")
-                }
-                val body = BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use {
-                    it.readText()
-                }
-                val parsed = parseOpenMeteoMinutely15(
-                    jsonString = body,
-                    probabilityThresholdPercent = probabilityThresholdPercent,
-                    leadTimeWindowMinutes = leadTimeWindowMinutes,
-                    nowEpochMillis = System.currentTimeMillis()
-                )
-                if (parsed != null) {
-                    OpenMeteoResult.Success(parsed)
-                } else {
-                    OpenMeteoResult.Failure("ดึงพยากรณ์ไม่ได้")
-                }
-            } finally {
-                conn.disconnect()
-            }
-        } catch (_: Exception) {
-            OpenMeteoResult.Failure("ดึงพยากรณ์ไม่ได้")
-        }
-    }
-
-    internal fun parseOpenMeteoMinutely15(
-        jsonString: String,
-        probabilityThresholdPercent: Int,
-        leadTimeWindowMinutes: Int,
-        nowEpochMillis: Long
-    ): OpenMeteoParsedForecast? {
-        val root = JSONObject(jsonString)
-        val utcOffsetSeconds = root.optInt("utc_offset_seconds", 0)
-        val minutely15 = root.optJSONObject("minutely_15") ?: return null
-        val times = minutely15.optJSONArray("time") ?: return null
-        val precipArr = minutely15.optJSONArray("precipitation")
-        val probArr = minutely15.optJSONArray("precipitation_probability")
-
-        val count = times.length()
-        if (count == 0) return null
-
-        val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("GMT")
-        }
-
-        // Convert each local ISO timestamp to actual UTC epoch millis using utc_offset_seconds
-        var startSlotIndex = 0
-        var minAbsDiff = Long.MAX_VALUE
-        val slotEpochs = LongArray(count)
-
-        for (i in 0 until count) {
-            val tStr = times.optString(i, "")
-            val parsedGmtMillis = runCatching { sdf.parse(tStr)?.time }.getOrNull() ?: continue
-            val slotUtcMillis = parsedGmtMillis - (utcOffsetSeconds * 1000L)
-            slotEpochs[i] = slotUtcMillis
-            val diff = kotlin.math.abs(slotUtcMillis - nowEpochMillis)
-            if (diff < minAbsDiff) {
-                minAbsDiff = diff
-                startSlotIndex = i
-            }
-        }
-
-        // Inspect slots from current slot up to 60 minutes (4 x 15-minute slots)
-        val maxSlotsToInspect = max(4, (leadTimeWindowMinutes / 15) + 1)
-        var detectedMinutesUntilRain: Int? = null
-        var maxProb = 0
-        var maxPrecipMm = 0.0
-
-        for (offset in 0..maxSlotsToInspect) {
-            val idx = startSlotIndex + offset
-            if (idx >= count) break
-            val prob = probArr?.optDouble(idx, 0.0)?.takeIf { !it.isNaN() }?.roundToInt() ?: 0
-            val precip = precipArr?.optDouble(idx, 0.0)?.takeIf { !it.isNaN() } ?: 0.0
-
-            if (prob > maxProb) maxProb = prob
-            if (precip > maxPrecipMm) maxPrecipMm = precip
-
-            val isRainSlot = prob >= probabilityThresholdPercent || precip >= 0.15
-            if (isRainSlot && detectedMinutesUntilRain == null) {
-                val rawMinutes = ((slotEpochs[idx] - nowEpochMillis) / 60_000L).toInt()
-                detectedMinutesUntilRain = when {
-                    rawMinutes <= 5 -> 15
-                    rawMinutes > 60 -> 60
-                    else -> rawMinutes
-                }
-            }
-        }
-
-        return OpenMeteoParsedForecast(
-            willRainSoon = detectedMinutesUntilRain != null,
-            minutesUntilRain = detectedMinutesUntilRain,
-            probabilityPercent = maxProb.coerceIn(0, 100),
-            precipitationMm = maxPrecipMm,
-            fetchedAtMillis = nowEpochMillis
-        )
     }
 }
