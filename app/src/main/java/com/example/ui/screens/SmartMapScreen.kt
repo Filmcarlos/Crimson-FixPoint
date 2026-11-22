@@ -1,10 +1,18 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,22 +27,22 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddLocationAlt
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.LocalGasStation
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.EditLocationAlt
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,20 +63,20 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.ai.RiderIntelligenceEngine
+import com.example.model.CoordinateFormat
 import com.example.model.GeoMath
-import com.example.model.MapLayerFilters
 import com.example.model.MapTapActionMode
 import com.example.model.PinCategory
 import com.example.model.SavedLocationItem
+import com.example.model.ZoneMonitorStatus
 import com.example.ui.components.InteractiveZoneMapCanvas
 import com.example.ui.components.PremiumPrimaryButton
 import com.example.ui.components.PremiumSecondaryButton
 import com.example.ui.components.StatusPillBadge
-import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CrimsonBorderGlow
 import com.example.ui.theme.CrimsonNeon
 import com.example.ui.theme.CrimsonRed
@@ -83,60 +91,49 @@ import com.example.ui.theme.SurfaceLevel2
 import com.example.ui.theme.TextHudMuted
 import com.example.ui.theme.TextHudPrimary
 import com.example.ui.theme.TextHudSecondary
-import com.example.ui.theme.VioletInsight
 import com.example.viewmodel.FixPointUiState
 import java.util.Locale
+import kotlin.math.abs
 
+/**
+ * Redesigned Work Zone Map ("โซนพื้นที่รับงาน"):
+ * - Clean, distraction-free dark OpenStreetMap focused strictly on delivery work zones & radius (0–30 km)
+ * - Safe pan/zoom by default: tapping the map never drops accidental pins unless "ย้ายจุด" edit mode is turned ON
+ * - Isolated overlay controls (+, −, Auto-Fit, GPS, header, bottom dock) so touches NEVER bleed through to the map
+ * - Streamlined bottom radius & zone control dock with 1-tap extra pin cleanup
+ */
 @Composable
 fun SmartMapScreen(
     uiState: FixPointUiState,
     onMapTapPin: (Double, Double) -> Unit,
     onSetMapTapMode: (MapTapActionMode) -> Unit,
-    onSetNewPinCategory: (PinCategory) -> Unit,
-    onUpdateLayerFilters: ((MapLayerFilters) -> MapLayerFilters) -> Unit,
-    onSelectMapPinForSheet: (String?) -> Unit,
     onSelectActivePin: (String) -> Unit,
     onSaveCurrentLocation: (String, Boolean, PinCategory) -> Unit,
     onPinFromCoordinates: (String, String, Boolean, PinCategory) -> Boolean,
     onDeletePin: (String) -> Unit,
     onSetZoneRadiusKm: (Float) -> Unit,
-    onSearchNearbyFuel: () -> Unit,
     onCopyCoordinates: (Double, Double) -> Unit,
     onShareCoordinates: (Double, Double) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var showAddPinDialog by remember { mutableStateOf(false) }
-    var showDestinationsDrawer by remember { mutableStateOf(false) }
+    var showAddZoneDialog by remember { mutableStateOf(false) }
+    var showZoneListSheet by remember { mutableStateOf(false) }
+    var isTapToMoveEnabled by remember { mutableStateOf(false) }
     var focusTarget by remember { mutableStateOf<Pair<Double, Double>?>(null) }
 
-    val hotspots = remember(
-        uiState.savedLocations,
-        uiState.analyzedOrders,
-        uiState.telemetry.latitude,
-        uiState.telemetry.longitude
-    ) {
-        RiderIntelligenceEngine.computeHotspotRecommendations(
-            savedPins = uiState.savedLocations,
-            analyzedOrders = uiState.analyzedOrders,
-            riderLat = uiState.telemetry.latitude,
-            riderLng = uiState.telemetry.longitude
-        )
-    }
+    val activePin = uiState.activePin
 
-    val selectedPin = uiState.selectedMapPin
-
-    if (showAddPinDialog) {
-        AddPinDialog(
-            defaultCategory = uiState.newPinCategory,
+    if (showAddZoneDialog) {
+        AddWorkZoneDialog(
             hasLiveGps = uiState.telemetry.hasFix,
-            onDismiss = { showAddPinDialog = false },
-            onSaveLiveGps = { name, category ->
-                onSaveCurrentLocation(name, false, category)
-                showAddPinDialog = false
+            onDismiss = { showAddZoneDialog = false },
+            onSaveLiveGps = { name ->
+                onSaveCurrentLocation(name, false, PinCategory.FIXPOINT)
+                showAddZoneDialog = false
             },
-            onSaveCoordinates = { coords, name, category ->
-                val ok = onPinFromCoordinates(coords, name, false, category)
-                if (ok) showAddPinDialog = false
+            onSaveCoordinates = { coords, name ->
+                val ok = onPinFromCoordinates(coords, name, false, PinCategory.FIXPOINT)
+                if (ok) showAddZoneDialog = false
                 ok
             }
         )
@@ -147,9 +144,9 @@ fun SmartMapScreen(
             .fillMaxSize()
             .testTag("smart_map_screen")
     ) {
-        // Full-Screen Dark OpenStreetMap Canvas
+        // Full-Screen Dark Work Zone Map Canvas (pointer gestures strictly isolated to Canvas layer)
         InteractiveZoneMapCanvas(
-            activePin = uiState.activePin,
+            activePin = activePin,
             allPins = uiState.savedLocations,
             userLatitude = uiState.telemetry.latitude,
             userLongitude = uiState.telemetry.longitude,
@@ -157,18 +154,26 @@ fun SmartMapScreen(
             gpsBufferMeters = uiState.gpsBufferMeters,
             zoneStatus = uiState.zoneStatus,
             distanceFromPinMeters = uiState.currentDistanceFromPinMeters,
-            onMapTapPin = onMapTapPin,
+            onMapTapPin = { lat, lng ->
+                // Always move active zone cleanly (or create first zone if none exists) — never spam duplicates
+                onSetMapTapMode(MapTapActionMode.MOVE_ACTIVE_PIN)
+                onMapTapPin(lat, lng)
+            },
             mapHeightDp = null,
-            layerFilters = uiState.mapLayerFilters,
-            hotspots = hotspots,
-            poiPins = uiState.nearbyOverpassFuelPois,
             focusTargetLatLng = focusTarget,
-            onMarkerSelected = { pin -> onSelectMapPinForSheet(pin.id) },
+            onMarkerSelected = { tappedPin ->
+                onSelectActivePin(tappedPin.id)
+                focusTarget = tappedPin.latitude to tappedPin.longitude
+            },
+            workZoneOnlyMode = true,
+            allowMapTapToPin = isTapToMoveEnabled,
+            controlsBottomPaddingDp = if (showZoneListSheet) 230 else 156,
+            attributionTopPaddingDp = if (isTapToMoveEnabled) 128 else 82,
             modifier = Modifier.fillMaxSize(),
             testTagName = "smart_map_osm_canvas"
         )
 
-        // Top Floating Layer Filter Chips Bar
+        // Top Floating Obsidian Glass Header Bar (Work Zone Summary + Move Toggle + Add Zone)
         Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -176,210 +181,145 @@ fun SmartMapScreen(
                 .padding(top = 10.dp, start = 12.dp, end = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            WorkZoneTopBar(
+                activePin = activePin,
+                zoneStatus = uiState.zoneStatus,
+                zoneRadiusKm = uiState.zoneRadiusKm,
+                distanceFromPinMeters = uiState.currentDistanceFromPinMeters,
+                isTapToMoveEnabled = isTapToMoveEnabled,
+                onToggleTapToMove = {
+                    isTapToMoveEnabled = !isTapToMoveEnabled
+                    if (isTapToMoveEnabled) {
+                        onSetMapTapMode(MapTapActionMode.MOVE_ACTIVE_PIN)
+                        showZoneListSheet = false
+                    }
+                },
+                onOpenAddZone = { showAddZoneDialog = true }
+            )
+
+            // Crisp Animated Guide Pill ONLY when Tap-to-Move Mode is ON
+            AnimatedVisibility(
+                visible = isTapToMoveEnabled,
+                enter = fadeIn(tween(180)) + expandVertically(tween(200)),
+                exit = fadeOut(tween(150)) + shrinkVertically(tween(180))
             ) {
-                MapLayerChip(
-                    label = "FixPoint",
-                    selected = uiState.mapLayerFilters.showFixPoints,
-                    accent = CrimsonNeon,
-                    onClick = { onUpdateLayerFilters { it.copy(showFixPoints = !it.showFixPoints) } },
-                    testTag = "chip_layer_fixpoint"
-                )
-                MapLayerChip(
-                    label = "Hotzone",
-                    selected = uiState.mapLayerFilters.showHotzones,
-                    accent = VioletInsight,
-                    onClick = { onUpdateLayerFilters { it.copy(showHotzones = !it.showHotzones) } },
-                    testTag = "chip_layer_hotzone"
-                )
-                MapLayerChip(
-                    label = "ร้านอาหาร",
-                    selected = uiState.mapLayerFilters.showRestaurants,
-                    accent = AmberWarning,
-                    onClick = { onUpdateLayerFilters { it.copy(showRestaurants = !it.showRestaurants) } },
-                    testTag = "chip_layer_restaurant"
-                )
-                MapLayerChip(
-                    label = "Heatmap (ประวัติ)",
-                    selected = uiState.mapLayerFilters.showHeatmap,
-                    accent = CrimsonRed,
-                    onClick = { onUpdateLayerFilters { it.copy(showHeatmap = !it.showHeatmap) } },
-                    testTag = "chip_layer_heatmap"
-                )
-                MapLayerChip(
-                    label = "รัศมีโซน",
-                    selected = uiState.mapLayerFilters.showZoneRadius,
-                    accent = EmeraldSRank,
-                    onClick = { onUpdateLayerFilters { it.copy(showZoneRadius = !it.showZoneRadius) } },
-                    testTag = "chip_layer_zone_radius"
-                )
-                MapLayerChip(
-                    label = "ปั๊มน้ำมัน",
-                    selected = uiState.mapLayerFilters.showFuelStations,
-                    accent = CyanTelemetry,
-                    onClick = { onUpdateLayerFilters { it.copy(showFuelStations = !it.showFuelStations) } },
-                    testTag = "chip_layer_fuel"
-                )
-            }
-
-            // Compact Tap Mode Pill Row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xE6120F17))
-                        .border(1.dp, HairlineBorder, RoundedCornerShape(12.dp))
-                        .padding(4.dp)
-                ) {
-                    MapTapActionMode.entries.forEach { mode ->
-                        val active = uiState.mapTapActionMode == mode
-                        Text(
-                            text = mode.labelTh,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (active) Color.White else TextHudMuted,
-                            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (active) CrimsonRed else Color.Transparent)
-                                .clickable { onSetMapTapMode(mode) }
-                                .padding(horizontal = 10.dp, vertical = 5.dp)
-                                .testTag("tap_mode_${mode.name.lowercase(Locale.ROOT)}")
-                        )
-                    }
-                }
-
-                // Quick search fuel & open add pin dialog
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xE6120F17),
-                        border = BorderStroke(1.dp, AmberWarning.copy(alpha = 0.6f)),
-                        modifier = Modifier
-                            .clickable(onClick = onSearchNearbyFuel)
-                            .testTag("btn_map_search_fuel")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(Icons.Default.LocalGasStation, contentDescription = "ค้นหาปั๊ม", tint = AmberWarning, modifier = Modifier.size(15.dp))
-                            Text("ปั๊ม", style = MaterialTheme.typography.labelSmall, color = TextHudPrimary)
-                        }
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = CrimsonRed,
-                        modifier = Modifier
-                            .clickable { showAddPinDialog = true }
-                            .testTag("btn_map_open_add_pin")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(Icons.Default.AddLocationAlt, contentDescription = "เพิ่มหมุด", tint = Color.White, modifier = Modifier.size(15.dp))
-                            Text("เพิ่มหมุด", style = MaterialTheme.typography.labelSmall, color = Color.White, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-        }
-
-        // Bottom Interactive Destination Detail Sheet OR Compact Drawer Launcher
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(start = 12.dp, end = 12.dp, bottom = 38.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (selectedPin != null) {
-                DestinationDetailBottomCard(
-                    pin = selectedPin,
-                    isActivePin = uiState.activePin?.id == selectedPin.id,
-                    userLat = uiState.telemetry.latitude,
-                    userLng = uiState.telemetry.longitude,
-                    coordinateFormat = uiState.coordinateFormat,
-                    zoneRadiusKm = uiState.zoneRadiusKm,
-                    onSetActive = { onSelectActivePin(selectedPin.id) },
-                    onSetRadiusKm = onSetZoneRadiusKm,
-                    onCopy = { onCopyCoordinates(selectedPin.latitude, selectedPin.longitude) },
-                    onShare = { onShareCoordinates(selectedPin.latitude, selectedPin.longitude) },
-                    onDelete = { onDeletePin(selectedPin.id) },
-                    onClose = { onSelectMapPinForSheet(null) }
-                )
-            } else if (showDestinationsDrawer) {
-                SavedPinsAndHotspotsSheet(
-                    pins = uiState.savedLocations,
-                    activePinId = uiState.activePin?.id,
-                    userLat = uiState.telemetry.latitude,
-                    userLng = uiState.telemetry.longitude,
-                    zoneRadiusKm = uiState.zoneRadiusKm,
-                    onSetRadiusKm = onSetZoneRadiusKm,
-                    onSelectPin = { pin ->
-                        onSelectMapPinForSheet(pin.id)
-                        focusTarget = pin.latitude to pin.longitude
-                        showDestinationsDrawer = false
-                    },
-                    onClose = { showDestinationsDrawer = false }
-                )
-            } else {
-                // Sleek floating bottom summary bar to open destinations / adjust radius
                 Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color(0xF2240A12),
+                    border = BorderStroke(1.dp, CrimsonNeon),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { showDestinationsDrawer = true }
-                        .testTag("btn_open_map_destinations_sheet"),
-                    shape = RoundedCornerShape(18.dp),
-                    color = Color(0xF013111A),
-                    border = BorderStroke(1.dp, CrimsonBorderGlow)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = {}
+                        )
+                        .testTag("work_zone_tap_move_banner")
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        Text(
+                            text = if (activePin != null) {
+                                "แตะบนแผนที่เพื่อย้ายจุดศูนย์กลางโซนรับงาน"
+                            } else {
+                                "แตะบนแผนที่เพื่อปักจุดโซนรับงานแรก"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TextHudPrimary,
                             modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            onClick = { isTapToMoveEnabled = false },
+                            shape = RoundedCornerShape(10.dp),
+                            color = CrimsonRed,
+                            modifier = Modifier.testTag("btn_finish_tap_move_zone")
                         ) {
-                            Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, tint = CrimsonNeon)
-                            Column {
-                                Text(
-                                    text = uiState.activePin?.let { "โซนหลัก: ${it.name}" }
-                                        ?: "แตะแผนที่เพื่อปักหมุด หรือเปิดรายการหมุด",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = TextHudPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(14.dp)
                                 )
                                 Text(
-                                    text = String.format(
-                                        Locale.US,
-                                        "รัศมี %.1f กม. • %d หมุด • %d โซนแนะนำ (ประวัติ)",
-                                        uiState.zoneRadiusKm,
-                                        uiState.savedLocations.size,
-                                        hotspots.size
-                                    ),
+                                    text = "เสร็จสิ้น",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = TextHudSecondary
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
                                 )
                             }
                         }
-                        StatusPillBadge(text = "จัดการโซน", accentColor = CrimsonNeon)
                     }
+                }
+            }
+        }
+
+        // Bottom Streamlined Work Zone Control Panel (consumes empty clicks so touches NEVER reach Canvas)
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 12.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {}
+                )
+                .testTag("work_zone_control_panel")
+        ) {
+            AnimatedContent(
+                targetState = showZoneListSheet,
+                transitionSpec = {
+                    fadeIn(tween(180)).togetherWith(fadeOut(tween(140)))
+                },
+                label = "work_zone_bottom_sheet_anim"
+            ) { expandedList ->
+                if (expandedList) {
+                    SavedWorkZonesSheet(
+                        pins = uiState.savedLocations,
+                        activePinId = activePin?.id,
+                        userLat = uiState.telemetry.latitude,
+                        userLng = uiState.telemetry.longitude,
+                        onSelectPin = { pin ->
+                            onSelectActivePin(pin.id)
+                            focusTarget = pin.latitude to pin.longitude
+                            showZoneListSheet = false
+                        },
+                        onDeletePin = onDeletePin,
+                        onKeepOnlyActivePin = {
+                            val keepId = activePin?.id
+                            uiState.savedLocations
+                                .filter { it.id != keepId }
+                                .forEach { onDeletePin(it.id) }
+                        },
+                        onOpenAddZone = {
+                            showZoneListSheet = false
+                            showAddZoneDialog = true
+                        },
+                        onClose = { showZoneListSheet = false }
+                    )
+                } else {
+                    CompactWorkZoneCard(
+                        activePin = activePin,
+                        totalZonesCount = uiState.savedLocations.size,
+                        coordinateFormat = uiState.coordinateFormat,
+                        zoneRadiusKm = uiState.zoneRadiusKm,
+                        onSetRadiusKm = onSetZoneRadiusKm,
+                        onOpenZoneList = { showZoneListSheet = true },
+                        onCopy = { activePin?.let { onCopyCoordinates(it.latitude, it.longitude) } },
+                        onShare = { activePin?.let { onShareCoordinates(it.latitude, it.longitude) } },
+                        onDeleteActive = { activePin?.let { onDeletePin(it.id) } }
+                    )
                 }
             }
         }
@@ -387,201 +327,329 @@ fun SmartMapScreen(
 }
 
 @Composable
-private fun MapLayerChip(
-    label: String,
-    selected: Boolean,
-    accent: Color,
-    onClick: () -> Unit,
-    testTag: String
+private fun WorkZoneTopBar(
+    activePin: SavedLocationItem?,
+    zoneStatus: ZoneMonitorStatus,
+    zoneRadiusKm: Float,
+    distanceFromPinMeters: Double?,
+    isTapToMoveEnabled: Boolean,
+    onToggleTapToMove: () -> Unit,
+    onOpenAddZone: () -> Unit
 ) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+    val statusDotColor = when {
+        activePin == null -> TextHudMuted
+        zoneStatus == ZoneMonitorStatus.INSIDE_ZONE -> EmeraldSRank
+        zoneStatus == ZoneMonitorStatus.OUTSIDE_ZONE -> CrimsonNeon
+        else -> CrimsonRed
+    }
+
+    val subtitleText = when {
+        activePin == null -> String.format(Locale.US, "รัศมี %.1f กม. • แตะปุ่มเพื่อกำหนดจุดโซน", zoneRadiusKm)
+        distanceFromPinMeters != null -> {
+            val statusWord = if (zoneStatus == ZoneMonitorStatus.OUTSIDE_ZONE) "นอกโซน" else "ในโซน"
+            "$statusWord • ห่าง ${GeoMath.formatShortZoneDistanceTh(distanceFromPinMeters)}"
+        }
+        else -> String.format(Locale.US, "โซนพื้นที่รับงาน • รัศมี %.1f กม.", zoneRadiusKm)
+    }
+
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = Color(0xF0121018),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (isTapToMoveEnabled) CrimsonNeon else CrimsonBorderGlow
+        ),
+        shadowElevation = 6.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {}
             )
-        },
-        colors = FilterChipDefaults.filterChipColors(
-            containerColor = Color(0xE613111A),
-            labelColor = TextHudSecondary,
-            selectedContainerColor = accent.copy(alpha = 0.25f),
-            selectedLabelColor = TextHudPrimary
-        ),
-        border = FilterChipDefaults.filterChipBorder(
-            enabled = true,
-            selected = selected,
-            borderColor = HairlineBorder,
-            selectedBorderColor = accent
-        ),
-        modifier = Modifier.testTag(testTag)
-    )
+            .testTag("work_zone_top_bar")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Status Indicator Dot + Active Zone Title
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(statusDotColor)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = activePin?.name ?: "โซนพื้นที่รับงาน",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = TextHudPrimary,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitleText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (zoneStatus == ZoneMonitorStatus.OUTSIDE_ZONE && activePin != null) {
+                        CrimsonNeon
+                    } else {
+                        TextHudSecondary
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            // Toggle Tap-to-Move Mode Button (48dp height target)
+            Surface(
+                onClick = onToggleTapToMove,
+                shape = RoundedCornerShape(12.dp),
+                color = if (isTapToMoveEnabled) CrimsonRed else SurfaceLevel2,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (isTapToMoveEnabled) CrimsonNeon else HairlineBorder
+                ),
+                modifier = Modifier
+                    .heightIn(min = 44.dp)
+                    .testTag("btn_toggle_tap_move_zone")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.EditLocationAlt,
+                        contentDescription = if (isTapToMoveEnabled) "ปิดโหมดย้ายจุดโซน" else "เปิดโหมดแตะย้ายจุดโซน",
+                        tint = if (isTapToMoveEnabled) Color.White else CrimsonNeon,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Text(
+                        text = if (isTapToMoveEnabled) "กำลังย้าย" else if (activePin != null) "ย้ายจุด" else "ปักจุด",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isTapToMoveEnabled) Color.White else TextHudPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // Add New Work Zone Button (48dp accessible square button)
+            Surface(
+                onClick = onOpenAddZone,
+                shape = RoundedCornerShape(12.dp),
+                color = CrimsonSubtleBg,
+                border = BorderStroke(1.dp, CrimsonNeon.copy(alpha = 0.6f)),
+                modifier = Modifier
+                    .size(44.dp)
+                    .testTag("btn_map_open_add_pin")
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "เพิ่มโซนพื้นที่รับงานใหม่",
+                        tint = CrimsonNeon,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
-private fun DestinationDetailBottomCard(
-    pin: SavedLocationItem,
-    isActivePin: Boolean,
-    userLat: Double?,
-    userLng: Double?,
-    coordinateFormat: com.example.model.CoordinateFormat,
+private fun CompactWorkZoneCard(
+    activePin: SavedLocationItem?,
+    totalZonesCount: Int,
+    coordinateFormat: CoordinateFormat,
     zoneRadiusKm: Float,
-    onSetActive: () -> Unit,
     onSetRadiusKm: (Float) -> Unit,
+    onOpenZoneList: () -> Unit,
     onCopy: () -> Unit,
     onShare: () -> Unit,
-    onDelete: () -> Unit,
-    onClose: () -> Unit
+    onDeleteActive: () -> Unit
 ) {
-    val distMeters = if (userLat != null && userLng != null) {
-        GeoMath.haversineMeters(userLat, userLng, pin.latitude, pin.longitude)
-    } else null
-
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("map_destination_detail_sheet"),
         shape = RoundedCornerShape(22.dp),
-        color = Color(0xF714111B),
-        border = BorderStroke(1.dp, CrimsonNeon.copy(alpha = 0.65f))
+        color = Color(0xF2121019),
+        border = BorderStroke(1.dp, CrimsonBorderGlow),
+        shadowElevation = 8.dp,
+        modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            // Row 1: Radius Label + Value + Saved Zones Drawer Button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        StatusPillBadge(text = pin.category.labelTh, accentColor = CrimsonNeon)
-                        if (isActivePin) {
-                            StatusPillBadge(text = "หมุดโซนหลัก", accentColor = EmeraldSRank, icon = Icons.Default.Star)
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
+                Column {
                     Text(
-                        text = pin.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = TextHudPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = GeoMath.formatCoordinatePair(pin.latitude, pin.longitude, coordinateFormat) +
-                            (distMeters?.let { " • ห่าง ${GeoMath.formatShortZoneDistanceTh(it)}" } ?: ""),
-                        style = MaterialTheme.typography.labelSmall,
+                        text = "รัศมีโซนพื้นที่รับงาน",
+                        style = MaterialTheme.typography.labelMedium,
                         color = TextHudSecondary
                     )
-                }
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Default.Close, contentDescription = "ปิดรายละเอียด", tint = TextHudMuted)
-                }
-            }
-
-            if (pin.historicalOrderCount > 0) {
-                Text(
-                    text = String.format(
-                        Locale.US,
-                        "ประวัติในเครื่อง: %d ออเดอร์ • ค่าส่งเฉลี่ย ฿%.0f (ประเมินจากประวัติในเครื่อง)",
-                        pin.historicalOrderCount,
-                        pin.historicalAvgPayoutBaht
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = VioletInsight
-                )
-            }
-
-            // Zone Radius Slider (0 - 30 km preserved!)
-            Column {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("รัศมีโซนรับงาน (0 – 30 กม.)", style = MaterialTheme.typography.labelMedium, color = TextHudSecondary)
                     Text(
                         text = String.format(Locale.US, "%.1f กม.", zoneRadiusKm),
-                        style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMonoFamily),
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontFamily = JetBrainsMonoFamily,
+                            fontWeight = FontWeight.Bold
+                        ),
                         color = CrimsonNeon
                     )
                 }
-                Slider(
-                    value = zoneRadiusKm,
-                    onValueChange = onSetRadiusKm,
-                    valueRange = 0f..30f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = CrimsonNeon,
-                        activeTrackColor = CrimsonRed,
-                        inactiveTrackColor = SurfaceElevated
-                    ),
-                    modifier = Modifier.testTag("slider_zone_radius_km")
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+
+                Surface(
+                    onClick = onOpenZoneList,
+                    shape = RoundedCornerShape(12.dp),
+                    color = SurfaceLevel2,
+                    border = BorderStroke(1.dp, HairlineBorder),
+                    modifier = Modifier
+                        .heightIn(min = 42.dp)
+                        .testTag("btn_open_map_destinations_sheet")
                 ) {
-                    listOf(1f, 3f, 5f, 10f, 20f, 30f).forEach { preset ->
-                        val active = kotlin.math.abs(zoneRadiusKm - preset) < 0.05f
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Place,
+                            contentDescription = null,
+                            tint = CrimsonNeon,
+                            modifier = Modifier.size(16.dp)
+                        )
                         Text(
-                            text = "${preset.toInt()}กม.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (active) Color.White else TextHudSecondary,
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (active) CrimsonRed else SurfaceLevel2)
-                                .clickable { onSetRadiusKm(preset) }
-                                .padding(vertical = 6.dp)
-                                .testTag("preset_radius_${preset.toInt()}"),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            text = "โซนของฉัน ($totalZonesCount)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TextHudPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowUp,
+                            contentDescription = "เปิดรายการโซนที่บันทึก",
+                            tint = TextHudMuted,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
             }
 
+            // Row 2: Smooth 0–30 km Slider
+            Slider(
+                value = zoneRadiusKm,
+                onValueChange = onSetRadiusKm,
+                valueRange = 0f..30f,
+                colors = SliderDefaults.colors(
+                    thumbColor = CrimsonNeon,
+                    activeTrackColor = CrimsonRed,
+                    inactiveTrackColor = SurfaceElevated
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(28.dp)
+                    .testTag("slider_zone_radius_km")
+            )
+
+            // Row 3: Quick Radius Presets (1, 3, 5, 10, 20, 30 km)
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                if (!isActivePin) {
-                    PremiumPrimaryButton(
-                        text = "ตั้งเป็นโซนหลัก",
-                        icon = Icons.Default.Star,
-                        onClick = onSetActive,
-                        modifier = Modifier.weight(1.2f),
-                        testTagName = "btn_set_active_pin"
+                listOf(1f, 3f, 5f, 10f, 20f, 30f).forEach { preset ->
+                    val active = abs(zoneRadiusKm - preset) < 0.05f
+                    Surface(
+                        onClick = { onSetRadiusKm(preset) },
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (active) CrimsonRed else SurfaceLevel2,
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (active) CrimsonNeon else HairlineBorder
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("preset_radius_${preset.toInt()}")
+                    ) {
+                        Text(
+                            text = "${preset.toInt()} กม.",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                            color = if (active) Color.White else TextHudSecondary,
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+                    }
+                }
+            }
+
+            // Row 4: Active Zone Coordinates + Quick Copy / Share / Delete Strip
+            if (activePin != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0x990A080E))
+                        .border(1.dp, HairlineBorder, RoundedCornerShape(12.dp))
+                        .padding(start = 12.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = GeoMath.formatCoordinatePair(
+                            activePin.latitude,
+                            activePin.longitude,
+                            coordinateFormat
+                        ),
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                        color = TextHudSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
                     )
-                }
-                IconButton(
-                    onClick = onCopy,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(SurfaceLevel2)
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "คัดลอกพิกัด", tint = CyanTelemetry)
-                }
-                IconButton(
-                    onClick = onShare,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(SurfaceLevel2)
-                ) {
-                    Icon(Icons.Default.Share, contentDescription = "แชร์พิกัด", tint = EmeraldSRank)
-                }
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(CrimsonSubtleBg)
-                        .testTag("btn_delete_selected_pin")
-                ) {
-                    Icon(Icons.Default.Delete, contentDescription = "ลบหมุด", tint = CrimsonNeon)
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        IconButton(
+                            onClick = onCopy,
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "คัดลอกพิกัดโซน",
+                                tint = CyanTelemetry,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = onShare,
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = "แชร์พิกัดโซน",
+                                tint = EmeraldSRank,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = onDeleteActive,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .testTag("btn_delete_selected_pin")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "ลบโซนหลักนี้",
+                                tint = CrimsonNeon,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -589,14 +657,15 @@ private fun DestinationDetailBottomCard(
 }
 
 @Composable
-private fun SavedPinsAndHotspotsSheet(
+private fun SavedWorkZonesSheet(
     pins: List<SavedLocationItem>,
     activePinId: String?,
     userLat: Double?,
     userLng: Double?,
-    zoneRadiusKm: Float,
-    onSetRadiusKm: (Float) -> Unit,
     onSelectPin: (SavedLocationItem) -> Unit,
+    onDeletePin: (String) -> Unit,
+    onKeepOnlyActivePin: () -> Unit,
+    onOpenAddZone: () -> Unit,
     onClose: () -> Unit
 ) {
     Surface(
@@ -605,8 +674,9 @@ private fun SavedPinsAndHotspotsSheet(
             .heightIn(max = 360.dp)
             .testTag("map_destinations_list_sheet"),
         shape = RoundedCornerShape(22.dp),
-        color = Color(0xF714111B),
-        border = BorderStroke(1.dp, CrimsonBorderGlow)
+        color = Color(0xF7121019),
+        border = BorderStroke(1.dp, CrimsonNeon.copy(alpha = 0.65f)),
+        shadowElevation = 10.dp
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
@@ -614,58 +684,109 @@ private fun SavedPinsAndHotspotsSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "หมุดที่บันทึกและโซนรับงาน (${pins.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextHudPrimary,
-                    fontWeight = FontWeight.Bold
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "โซนพื้นที่รับงานที่บันทึก (${pins.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextHudPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "แตะเพื่อเลือกเป็นโซนหลัก หรือลบโซนที่ไม่ใช้",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextHudMuted
+                    )
+                }
                 IconButton(onClick = onClose) {
-                    Icon(Icons.Default.Close, contentDescription = "ปิดรายการ", tint = TextHudMuted)
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "ซ่อนรายการโซน",
+                        tint = TextHudMuted
+                    )
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("รัศมีโซน: ${String.format(Locale.US, "%.1f", zoneRadiusKm)} กม.", style = MaterialTheme.typography.labelMedium, color = CrimsonNeon)
-                Slider(
-                    value = zoneRadiusKm,
-                    onValueChange = onSetRadiusKm,
-                    valueRange = 0f..30f,
-                    modifier = Modifier.width(180.dp),
-                    colors = SliderDefaults.colors(thumbColor = CrimsonNeon, activeTrackColor = CrimsonRed)
-                )
+
+            if (pins.size > 1) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Surface(
+                    onClick = onKeepOnlyActivePin,
+                    shape = RoundedCornerShape(12.dp),
+                    color = CrimsonSubtleBg,
+                    border = BorderStroke(1.dp, CrimsonNeon.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("btn_clear_extra_zone_pins")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteSweep,
+                            contentDescription = null,
+                            tint = CrimsonNeon,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "ล้างหมุดอื่นทั้งหมด (เก็บเฉพาะโซนหลัก)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = CrimsonNeon,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             if (pins.isEmpty()) {
-                Text(
-                    text = "ยังไม่มีหมุดในเครื่อง แตะบนแผนที่หรือกด 'เพิ่มหมุด' เพื่อเริ่มตั้งโซนรับงาน",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextHudMuted,
-                    modifier = Modifier.padding(vertical = 12.dp)
-                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "ยังไม่มีโซนพื้นที่รับงานที่บันทึกไว้",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextHudMuted
+                    )
+                    PremiumPrimaryButton(
+                        text = "เพิ่มโซนพื้นที่รับงาน",
+                        icon = Icons.Default.Add,
+                        onClick = onOpenAddZone,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             } else {
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = PaddingValues(vertical = 6.dp)
+                    contentPadding = PaddingValues(vertical = 4.dp)
                 ) {
                     items(pins.size, key = { pins[it].id }) { idx ->
                         val pin = pins[idx]
                         val isActive = pin.id == activePinId
                         val dist = if (userLat != null && userLng != null) {
-                            GeoMath.formatShortZoneDistanceTh(GeoMath.haversineMeters(userLat, userLng, pin.latitude, pin.longitude))
+                            GeoMath.formatShortZoneDistanceTh(
+                                GeoMath.haversineMeters(userLat, userLng, pin.latitude, pin.longitude)
+                            )
                         } else null
+
                         Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onSelectPin(pin) },
+                            onClick = { onSelectPin(pin) },
+                            modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp),
                             color = if (isActive) CrimsonSubtleBg else SurfaceLevel2,
-                            border = BorderStroke(1.dp, if (isActive) CrimsonNeon else HairlineBorder)
+                            border = BorderStroke(
+                                width = 1.dp,
+                                color = if (isActive) CrimsonNeon else HairlineBorder
+                            )
                         ) {
                             Row(
-                                modifier = Modifier.padding(12.dp),
+                                modifier = Modifier.padding(start = 12.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
@@ -675,27 +796,52 @@ private fun SavedPinsAndHotspotsSheet(
                                     modifier = Modifier.weight(1f)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Place,
+                                        imageVector = if (isActive) Icons.Default.Star else Icons.Default.Place,
                                         contentDescription = null,
-                                        tint = if (isActive) CrimsonNeon else TextHudSecondary
+                                        tint = if (isActive) CrimsonNeon else TextHudSecondary,
+                                        modifier = Modifier.size(20.dp)
                                     )
                                     Column {
                                         Text(
                                             text = pin.name,
                                             style = MaterialTheme.typography.titleSmall,
                                             color = TextHudPrimary,
+                                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
-                                            text = pin.category.labelTh + (dist?.let { " • $it" } ?: ""),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = TextHudMuted
+                                            text = String.format(
+                                                Locale.US,
+                                                "%.5f, %.5f",
+                                                pin.latitude,
+                                                pin.longitude
+                                            ) + (dist?.let { " • $it" } ?: ""),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = JetBrainsMonoFamily),
+                                            color = TextHudMuted,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                 }
-                                if (isActive) {
-                                    StatusPillBadge(text = "หลัก", accentColor = EmeraldSRank)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    if (isActive) {
+                                        StatusPillBadge(text = "โซนหลัก", accentColor = EmeraldSRank)
+                                    }
+                                    IconButton(
+                                        onClick = { onDeletePin(pin.id) },
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = "ลบโซน ${pin.name}",
+                                            tint = TextHudMuted,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -707,16 +853,14 @@ private fun SavedPinsAndHotspotsSheet(
 }
 
 @Composable
-private fun AddPinDialog(
-    defaultCategory: PinCategory,
+private fun AddWorkZoneDialog(
     hasLiveGps: Boolean,
     onDismiss: () -> Unit,
-    onSaveLiveGps: (String, PinCategory) -> Unit,
-    onSaveCoordinates: (String, String, PinCategory) -> Boolean
+    onSaveLiveGps: (String) -> Unit,
+    onSaveCoordinates: (String, String) -> Boolean
 ) {
     var name by remember { mutableStateOf("") }
     var coordText by remember { mutableStateOf("") }
-    var selectedCategory by remember { mutableStateOf(defaultCategory) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
@@ -724,54 +868,41 @@ private fun AddPinDialog(
         containerColor = SurfaceLevel1,
         titleContentColor = TextHudPrimary,
         textContentColor = TextHudSecondary,
-        title = { Text("เพิ่มหมุดบน Smart Map", fontWeight = FontWeight.Bold) },
+        title = { Text("เพิ่มโซนพื้นที่รับงาน", fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("ชื่อสถานที่ / โซน") },
+                    label = { Text("ชื่อโซนรับงาน (เช่น โซนสยาม / อโศก)") },
                     singleLine = true,
                     colors = crimsonFieldColors(),
-                    modifier = Modifier.fillMaxWidth().testTag("input_add_pin_name")
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("input_add_pin_name")
                 )
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    listOf(
-                        PinCategory.FIXPOINT,
-                        PinCategory.HOTZONE,
-                        PinCategory.RESTAURANT,
-                        PinCategory.FUEL
-                    ).forEach { cat ->
-                        FilterChip(
-                            selected = selectedCategory == cat,
-                            onClick = { selectedCategory = cat },
-                            label = { Text(cat.labelTh, style = MaterialTheme.typography.labelSmall) }
-                        )
-                    }
-                }
                 OutlinedTextField(
                     value = coordText,
                     onValueChange = {
                         coordText = it
                         errorText = null
                     },
-                    label = { Text("พิกัด (เช่น 13.7563, 100.5018)") },
+                    label = { Text("พิกัดศูนย์กลางโซน (ละติจูด, ลองจิจูด)") },
                     singleLine = true,
                     colors = crimsonFieldColors(),
-                    modifier = Modifier.fillMaxWidth().testTag("input_add_pin_coords")
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("input_add_pin_coords")
                 )
                 if (errorText != null) {
                     Text(errorText!!, style = MaterialTheme.typography.labelSmall, color = CrimsonNeon)
                 }
                 if (hasLiveGps) {
                     PremiumSecondaryButton(
-                        text = "ใช้ตำแหน่ง GPS ปัจจุบัน",
+                        text = "ใช้ตำแหน่ง GPS ปัจจุบันเป็นโซนหลัก",
                         icon = Icons.Default.MyLocation,
                         accentColor = EmeraldSRank,
-                        onClick = { onSaveLiveGps(name, selectedCategory) },
+                        onClick = { onSaveLiveGps(name) },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -779,11 +910,11 @@ private fun AddPinDialog(
         },
         confirmButton = {
             PremiumPrimaryButton(
-                text = "บันทึกหมุด",
+                text = "บันทึกโซน",
                 onClick = {
-                    val ok = onSaveCoordinates(coordText, name, selectedCategory)
+                    val ok = onSaveCoordinates(coordText, name)
                     if (!ok) {
-                        errorText = "รูปแบบพิกัดไม่ถูกต้อง กรุณากรอก ละติจูด, ลองจิจูด"
+                        errorText = "รูปแบบพิกัดไม่ถูกต้อง กรุณากรอกเช่น 13.7563, 100.5018"
                     }
                 },
                 testTagName = "btn_confirm_add_pin"

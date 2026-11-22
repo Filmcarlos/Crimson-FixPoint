@@ -10,6 +10,7 @@ import android.util.LruCache
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -33,12 +34,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -291,6 +296,10 @@ fun InteractiveZoneMapCanvas(
     focusTargetLatLng: Pair<Double, Double>? = null,
     onMarkerSelected: ((SavedLocationItem) -> Unit)? = null,
     showBuiltInControls: Boolean = true,
+    workZoneOnlyMode: Boolean = false,
+    allowMapTapToPin: Boolean = true,
+    controlsBottomPaddingDp: Int = 88,
+    attributionTopPaddingDp: Int? = null,
     testTagName: String = "interactive_zone_map_canvas"
 ) {
     val context = LocalContext.current
@@ -299,6 +308,7 @@ fun InteractiveZoneMapCanvas(
     val currentOnMapTapPin by rememberUpdatedState(onMapTapPin)
     val currentOnMarkerSelected by rememberUpdatedState(onMarkerSelected)
     val currentPins by rememberUpdatedState(allPins)
+    val currentAllowMapTapToPin by rememberUpdatedState(allowMapTapToPin)
 
     val initialLat = activePin?.latitude ?: userLatitude ?: 13.756331
     val initialLng = activePin?.longitude ?: userLongitude ?: 100.501762
@@ -409,89 +419,6 @@ fun InteractiveZoneMapCanvas(
                     if (wasDefault) fitMapBoundsToTarget()
                 }
             }
-            .pointerInput(Unit) {
-                val touchSlopPx = viewConfiguration.touchSlop
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    val downPos = down.position
-                    var totalPanDistance = 0f
-                    var wasMultiTouch = false
-
-                    do {
-                        val event = awaitPointerEvent()
-                        val pressedCount = event.changes.count { it.pressed }
-                        if (pressedCount >= 2) {
-                            wasMultiTouch = true
-                            val zoomChange = event.calculateZoom()
-                            val panChange = event.calculatePan()
-                            val centroid = event.calculateCentroid()
-                            if (zoomChange != 1f || panChange != Offset.Zero) {
-                                val oldZoom = zoomLevel
-                                val newZoom = (oldZoom + ln(zoomChange.toDouble()) / ln(2.0)).coerceIn(3.0, 18.8)
-                                val oldWorldSize = 256.0 * 2.0.pow(oldZoom)
-                                val newWorldSize = 256.0 * 2.0.pow(newZoom)
-
-                                val offsetFromCenterX = if (centroid != Offset.Unspecified) {
-                                    (centroid.x - size.width / 2f).toDouble()
-                                } else 0.0
-                                val offsetFromCenterY = if (centroid != Offset.Unspecified) {
-                                    (centroid.y - size.height / 2f).toDouble()
-                                } else 0.0
-
-                                val focusWorldX = WebMercatorMath.lngToWorldX(centerLng, oldWorldSize) + offsetFromCenterX
-                                val focusWorldY = WebMercatorMath.latToWorldY(centerLat, oldWorldSize) + offsetFromCenterY
-                                val focusLat = WebMercatorMath.worldYToLat(focusWorldY, oldWorldSize)
-                                val focusLng = WebMercatorMath.worldXToLng(focusWorldX, oldWorldSize)
-
-                                val newCenterWorldX = WebMercatorMath.lngToWorldX(focusLng, newWorldSize) - offsetFromCenterX - panChange.x
-                                val newCenterWorldY = WebMercatorMath.latToWorldY(focusLat, newWorldSize) - offsetFromCenterY - panChange.y
-
-                                zoomLevel = newZoom
-                                centerLng = WebMercatorMath.worldXToLng(newCenterWorldX, newWorldSize)
-                                centerLat = WebMercatorMath.worldYToLat(newCenterWorldY, newWorldSize)
-                            }
-                            event.changes.forEach { if (it.positionChanged()) it.consume() }
-                        } else if (pressedCount == 1 && !wasMultiTouch) {
-                            val panChange = event.calculatePan()
-                            totalPanDistance += panChange.getDistance()
-                            if (totalPanDistance > touchSlopPx) {
-                                val worldSize = 256.0 * 2.0.pow(zoomLevel)
-                                val newWorldX = WebMercatorMath.lngToWorldX(centerLng, worldSize) - panChange.x
-                                val newWorldY = WebMercatorMath.latToWorldY(centerLat, worldSize) - panChange.y
-                                centerLng = WebMercatorMath.worldXToLng(newWorldX, worldSize)
-                                centerLat = WebMercatorMath.worldYToLat(newWorldY, worldSize)
-                                event.changes.forEach { if (it.positionChanged()) it.consume() }
-                            }
-                        }
-                    } while (event.changes.any { it.pressed })
-
-                    if (!wasMultiTouch && totalPanDistance <= touchSlopPx) {
-                        val worldSize = 256.0 * 2.0.pow(zoomLevel)
-                        val centerWorldX = WebMercatorMath.lngToWorldX(centerLng, worldSize)
-                        val centerWorldY = WebMercatorMath.latToWorldY(centerLat, worldSize)
-
-                        // Check if user tapped an existing marker first
-                        val markerCb = currentOnMarkerSelected
-                        val tappedPin = if (markerCb != null) {
-                            currentPins.firstOrNull { pin ->
-                                val px = (WebMercatorMath.lngToWorldX(pin.longitude, worldSize) - centerWorldX + size.width / 2.0).toFloat()
-                                val py = (WebMercatorMath.latToWorldY(pin.latitude, worldSize) - centerWorldY + size.height / 2.0).toFloat()
-                                hypot((downPos.x - px).toDouble(), (downPos.y - py).toDouble()) <= hitSlopPx
-                            }
-                        } else null
-
-                        if (tappedPin != null && markerCb != null) {
-                            markerCb(tappedPin)
-                        } else {
-                            val tappedWorldX = centerWorldX + (downPos.x - size.width / 2f)
-                            val tappedWorldY = centerWorldY + (downPos.y - size.height / 2f)
-                            val tappedLat = WebMercatorMath.worldYToLat(tappedWorldY, worldSize)
-                            val tappedLng = WebMercatorMath.worldXToLng(tappedWorldX, worldSize)
-                            currentOnMapTapPin(tappedLat, tappedLng)
-                        }
-                    }
-                }
-            }
             .testTag(testTagName)
     ) {
         val intZoom = floor(zoomLevel).toInt().coerceIn(2, 19)
@@ -528,7 +455,100 @@ fun InteractiveZoneMapCanvas(
             }
         }
 
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        // Pointer gestures live EXCLUSIVELY on the Canvas sibling underneath all overlay buttons/sheets,
+        // with requireUnconsumed = true so taps on +, -, recenter, or bottom sheets can NEVER bleed through.
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    val touchSlopPx = viewConfiguration.touchSlop
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = true)
+                        if (down.isConsumed) return@awaitEachGesture
+                        val downPos = down.position
+                        var totalPanDistance = 0f
+                        var wasMultiTouch = false
+                        var anyConsumedByOverlay = false
+
+                        do {
+                            val event = awaitPointerEvent()
+                            if (event.changes.any { it.isConsumed }) {
+                                anyConsumedByOverlay = true
+                            }
+                            val pressedCount = event.changes.count { it.pressed }
+                            if (pressedCount >= 2) {
+                                wasMultiTouch = true
+                                val zoomChange = event.calculateZoom()
+                                val panChange = event.calculatePan()
+                                val centroid = event.calculateCentroid()
+                                if (zoomChange != 1f || panChange != Offset.Zero) {
+                                    val oldZoom = zoomLevel
+                                    val newZoom = (oldZoom + ln(zoomChange.toDouble()) / ln(2.0)).coerceIn(3.0, 18.8)
+                                    val oldWorldSize = 256.0 * 2.0.pow(oldZoom)
+                                    val newWorldSize = 256.0 * 2.0.pow(newZoom)
+
+                                    val offsetFromCenterX = if (centroid != Offset.Unspecified) {
+                                        (centroid.x - size.width / 2f).toDouble()
+                                    } else 0.0
+                                    val offsetFromCenterY = if (centroid != Offset.Unspecified) {
+                                        (centroid.y - size.height / 2f).toDouble()
+                                    } else 0.0
+
+                                    val focusWorldX = WebMercatorMath.lngToWorldX(centerLng, oldWorldSize) + offsetFromCenterX
+                                    val focusWorldY = WebMercatorMath.latToWorldY(centerLat, oldWorldSize) + offsetFromCenterY
+                                    val focusLat = WebMercatorMath.worldYToLat(focusWorldY, oldWorldSize)
+                                    val focusLng = WebMercatorMath.worldXToLng(focusWorldX, oldWorldSize)
+
+                                    val newCenterWorldX = WebMercatorMath.lngToWorldX(focusLng, newWorldSize) - offsetFromCenterX - panChange.x
+                                    val newCenterWorldY = WebMercatorMath.latToWorldY(focusLat, newWorldSize) - offsetFromCenterY - panChange.y
+
+                                    zoomLevel = newZoom
+                                    centerLng = WebMercatorMath.worldXToLng(newCenterWorldX, newWorldSize)
+                                    centerLat = WebMercatorMath.worldYToLat(newCenterWorldY, newWorldSize)
+                                }
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            } else if (pressedCount == 1 && !wasMultiTouch) {
+                                val panChange = event.calculatePan()
+                                totalPanDistance += panChange.getDistance()
+                                if (totalPanDistance > touchSlopPx) {
+                                    val worldSize = 256.0 * 2.0.pow(zoomLevel)
+                                    val newWorldX = WebMercatorMath.lngToWorldX(centerLng, worldSize) - panChange.x
+                                    val newWorldY = WebMercatorMath.latToWorldY(centerLat, worldSize) - panChange.y
+                                    centerLng = WebMercatorMath.worldXToLng(newWorldX, worldSize)
+                                    centerLat = WebMercatorMath.worldYToLat(newWorldY, worldSize)
+                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                }
+                            }
+                        } while (event.changes.any { it.pressed })
+
+                        if (!wasMultiTouch && !anyConsumedByOverlay && totalPanDistance <= touchSlopPx) {
+                            val worldSize = 256.0 * 2.0.pow(zoomLevel)
+                            val centerWorldX = WebMercatorMath.lngToWorldX(centerLng, worldSize)
+                            val centerWorldY = WebMercatorMath.latToWorldY(centerLat, worldSize)
+
+                            // Check if user tapped an existing marker first
+                            val markerCb = currentOnMarkerSelected
+                            val tappedPin = if (markerCb != null) {
+                                currentPins.firstOrNull { pin ->
+                                    val px = (WebMercatorMath.lngToWorldX(pin.longitude, worldSize) - centerWorldX + size.width / 2.0).toFloat()
+                                    val py = (WebMercatorMath.latToWorldY(pin.latitude, worldSize) - centerWorldY + size.height / 2.0).toFloat()
+                                    hypot((downPos.x - px).toDouble(), (downPos.y - py).toDouble()) <= hitSlopPx
+                                }
+                            } else null
+
+                            if (tappedPin != null && markerCb != null) {
+                                markerCb(tappedPin)
+                            } else if (currentAllowMapTapToPin) {
+                                val tappedWorldX = centerWorldX + (downPos.x - size.width / 2f)
+                                val tappedWorldY = centerWorldY + (downPos.y - size.height / 2f)
+                                val tappedLat = WebMercatorMath.worldYToLat(tappedWorldY, worldSize)
+                                val tappedLng = WebMercatorMath.worldXToLng(tappedWorldX, worldSize)
+                                currentOnMapTapPin(tappedLat, tappedLng)
+                            }
+                        }
+                    }
+                }
+        ) {
             val rev = tileDrawRevision
             if (rev < 0) return@Canvas
 
@@ -606,8 +626,8 @@ fun InteractiveZoneMapCanvas(
                 )
             }
 
-            // 3. Historical Hotspot Heatmap Layer (translucent radial clusters from local historical records)
-            if (layerFilters.showHeatmap && hotspots.isNotEmpty()) {
+            // 3. Historical Hotspot Heatmap Layer (hidden in clean Work Zone mode)
+            if (!workZoneOnlyMode && layerFilters.showHeatmap && hotspots.isNotEmpty()) {
                 hotspots.forEach { spot ->
                     val pos = latLngToScreen(spot.latitude, spot.longitude)
                     val heatRadiusPx = (46.dp.toPx() + spot.estimatedHeatScore * 52.dp.toPx())
@@ -629,50 +649,86 @@ fun InteractiveZoneMapCanvas(
                 }
             }
 
-            // 4. Active FixPoint Zone Radius Circle (0–30 km) + GPS Buffer Ring
-            if (layerFilters.showZoneRadius && activePin != null) {
+            // 4. Active Work Zone Radius Circle (0–30 km) + GPS Buffer Ring
+            if ((workZoneOnlyMode || layerFilters.showZoneRadius) && activePin != null) {
                 val pinScreenPos = latLngToScreen(activePin.latitude, activePin.longitude)
                 val metersPerPx = WebMercatorMath.metersPerPixel(activePin.latitude, zoomLevel)
                 val radiusMeters = (animatedRadiusKm * 1000.0).coerceAtLeast(25.0)
                 val radiusPx = (radiusMeters / metersPerPx).toFloat().coerceIn(6f, 8000f)
 
                 val isOutside = zoneStatus == ZoneMonitorStatus.OUTSIDE_ZONE
-                val fillAlpha = if (isOutside) 0.28f else 0.18f
                 val strokeColor = if (isOutside) Color(0xFFFF1744) else CrimsonNeon
 
                 drawCircle(
-                    color = CrimsonRed.copy(alpha = fillAlpha),
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            CrimsonRed.copy(alpha = if (isOutside) 0.14f else 0.08f),
+                            CrimsonRed.copy(alpha = if (isOutside) 0.30f else 0.22f)
+                        ),
+                        center = pinScreenPos,
+                        radius = radiusPx.coerceAtLeast(10f)
+                    ),
                     radius = radiusPx,
                     center = pinScreenPos
                 )
                 drawCircle(
-                    color = strokeColor.copy(alpha = 0.30f),
+                    color = strokeColor.copy(alpha = 0.26f),
                     radius = radiusPx,
                     center = pinScreenPos,
-                    style = Stroke(width = 6.dp.toPx())
+                    style = Stroke(width = 7.dp.toPx())
                 )
                 drawCircle(
                     color = strokeColor,
                     radius = radiusPx,
                     center = pinScreenPos,
-                    style = Stroke(width = 2.dp.toPx())
+                    style = Stroke(width = 2.2.dp.toPx())
                 )
                 if (gpsBufferMeters > 0) {
                     val totalBufferPx = ((radiusMeters + gpsBufferMeters) / metersPerPx).toFloat().coerceIn(8f, 8200f)
                     drawCircle(
-                        color = AmberWarning.copy(alpha = 0.78f),
+                        color = AmberWarning.copy(alpha = 0.72f),
                         radius = totalBufferPx,
                         center = pinScreenPos,
                         style = Stroke(
-                            width = 1.5.dp.toPx(),
+                            width = 1.4.dp.toPx(),
                             pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 10f), 0f)
                         )
                     )
                 }
+
+                // Clean radius tag perched on top arc of the work zone circle
+                if (radiusPx in 42f..(canvasH * 0.45f)) {
+                    val radLabel = String.format(Locale.US, "รัศมี %.1f กม.", animatedRadiusKm)
+                    val rw = subLabelPaint.measureText(radLabel)
+                    val rPillW = rw + 16.dp.toPx()
+                    val rPillH = 19.dp.toPx()
+                    val rTopLeft = Offset(pinScreenPos.x - rPillW / 2f, pinScreenPos.y - radiusPx - rPillH / 2f)
+                    if (rTopLeft.y > 48.dp.toPx() && rTopLeft.y < canvasH - 80.dp.toPx()) {
+                        drawRoundRect(
+                            color = Color(0xF0120E16),
+                            topLeft = rTopLeft,
+                            size = Size(rPillW, rPillH),
+                            cornerRadius = CornerRadius(10.dp.toPx(), 10.dp.toPx())
+                        )
+                        drawRoundRect(
+                            color = strokeColor.copy(alpha = 0.85f),
+                            topLeft = rTopLeft,
+                            size = Size(rPillW, rPillH),
+                            cornerRadius = CornerRadius(10.dp.toPx(), 10.dp.toPx()),
+                            style = Stroke(1.dp.toPx())
+                        )
+                        drawContext.canvas.nativeCanvas.drawText(
+                            radLabel,
+                            pinScreenPos.x,
+                            rTopLeft.y + rPillH * 0.72f,
+                            subLabelPaint
+                        )
+                    }
+                }
             }
 
-            // 5. Fuel Stations from Overpass (optional layer)
-            if (layerFilters.showFuelStations && poiPins.isNotEmpty()) {
+            // 5. Fuel Stations from Overpass (hidden in clean Work Zone mode)
+            if (!workZoneOnlyMode && layerFilters.showFuelStations && poiPins.isNotEmpty()) {
                 poiPins.take(30).forEach { poi ->
                     val pos = latLngToScreen(poi.latitude, poi.longitude)
                     if (pos.x in -40f..(canvasW + 40f) && pos.y in -40f..(canvasH + 40f)) {
@@ -689,11 +745,13 @@ fun InteractiveZoneMapCanvas(
                 }
             }
 
-            // 6. Saved Pins filtered by category (FixPoint, Hotzone, Restaurant, Fuel, Rest)
-            val topHotspotId = hotspots.firstOrNull()?.id
-            allPins.forEach { pin ->
+            // 6. Saved Pins (Work Zone mode renders clean active target + non-overlapping secondary dots)
+            val topHotspotId = if (workZoneOnlyMode) null else hotspots.firstOrNull()?.id
+            // Draw secondary pins first, then active pin on top so active pin is never obscured
+            val orderedPins = allPins.sortedBy { if (activePin?.id == it.id) 1 else 0 }
+            orderedPins.forEach { pin ->
                 val isActive = activePin?.id == pin.id
-                val visible = isActive || when (pin.category) {
+                val visible = workZoneOnlyMode || isActive || when (pin.category) {
                     PinCategory.FIXPOINT -> layerFilters.showFixPoints
                     PinCategory.HOTZONE -> layerFilters.showHotzones
                     PinCategory.RESTAURANT -> layerFilters.showRestaurants
@@ -704,6 +762,51 @@ fun InteractiveZoneMapCanvas(
 
                 val pos = latLngToScreen(pin.latitude, pin.longitude)
                 if (pos.x !in -60f..(canvasW + 60f) || pos.y !in -60f..(canvasH + 60f)) return@forEach
+
+                if (workZoneOnlyMode) {
+                    if (isActive) {
+                        drawCircle(color = CrimsonNeon.copy(alpha = 0.24f), radius = 20.dp.toPx(), center = pos)
+                        drawCircle(color = CrimsonRed, radius = 11.dp.toPx(), center = pos)
+                        drawCircle(color = Color.White, radius = 11.dp.toPx(), center = pos, style = Stroke(2.2.dp.toPx()))
+                        drawContext.canvas.nativeCanvas.drawText("★", pos.x, pos.y + 3.8.dp.toPx(), badgeTextPaint)
+
+                        // Single crisp label pill for active work zone only (zero overlap clutter!)
+                        val distLabel = if (userLatitude != null && userLongitude != null) {
+                            val d = GeoMath.haversineMeters(userLatitude, userLongitude, pin.latitude, pin.longitude)
+                            " • ${GeoMath.formatShortZoneDistanceTh(d)}"
+                        } else ""
+                        val labelText = pin.name.take(18) + distLabel
+                        val tw = labelPaint.measureText(labelText)
+                        val pillW = tw + 18.dp.toPx()
+                        val pillH = 22.dp.toPx()
+                        val pillTopLeft = Offset(pos.x - pillW / 2f, pos.y - 11.dp.toPx() - 8.dp.toPx() - pillH)
+                        drawRoundRect(
+                            color = Color(0xF20D0A12),
+                            topLeft = pillTopLeft,
+                            size = Size(pillW, pillH),
+                            cornerRadius = CornerRadius(10.dp.toPx(), 10.dp.toPx())
+                        )
+                        drawRoundRect(
+                            color = CrimsonNeon,
+                            topLeft = pillTopLeft,
+                            size = Size(pillW, pillH),
+                            cornerRadius = CornerRadius(10.dp.toPx(), 10.dp.toPx()),
+                            style = Stroke(1.2.dp.toPx())
+                        )
+                        drawContext.canvas.nativeCanvas.drawText(
+                            labelText,
+                            pos.x,
+                            pillTopLeft.y + pillH * 0.72f,
+                            labelPaint
+                        )
+                    } else {
+                        // Subtle minimal marker for other saved work zones (tap to switch)
+                        drawCircle(color = Color(0xCC1E293B), radius = 7.dp.toPx(), center = pos)
+                        drawCircle(color = Color(0xCCF8FAFC), radius = 7.dp.toPx(), center = pos, style = Stroke(1.6.dp.toPx()))
+                        drawCircle(color = CrimsonNeon.copy(alpha = 0.85f), radius = 2.6.dp.toPx(), center = pos)
+                    }
+                    return@forEach
+                }
 
                 val markerColor = when {
                     isActive -> CrimsonRed
@@ -720,7 +823,6 @@ fun InteractiveZoneMapCanvas(
                     else -> "P"
                 }
 
-                // Recommended Next Destination halo
                 if (pin.id == topHotspotId) {
                     drawCircle(
                         color = EmeraldSRank.copy(alpha = 0.25f),
@@ -746,8 +848,7 @@ fun InteractiveZoneMapCanvas(
                 drawCircle(color = Color.White, radius = markerRadius, center = pos, style = Stroke(2.dp.toPx()))
                 drawContext.canvas.nativeCanvas.drawText(symbol, pos.x, pos.y + 3.5.dp.toPx(), badgeTextPaint)
 
-                // Tooltip pill with name & distance from rider
-                if (isActive || pin.id == topHotspotId || zoomLevel >= 12.5) {
+                if (isActive || pin.id == topHotspotId) {
                     val distLabel = if (userLatitude != null && userLongitude != null) {
                         val d = GeoMath.haversineMeters(userLatitude, userLongitude, pin.latitude, pin.longitude)
                         " • ${GeoMath.formatShortZoneDistanceTh(d)}"
@@ -799,64 +900,108 @@ fun InteractiveZoneMapCanvas(
             }
         }
 
-        // Right-side Floating Map Zoom & Recenter Controls
+        // Right-side Floating Glass Zoom & Recenter Dock (strictly isolated from map Canvas touches)
         if (showBuiltInControls) {
             Column(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .padding(end = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .padding(end = 12.dp, bottom = controlsBottomPaddingDp.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                MapControlCircleButton(
-                    label = "+",
-                    contentDesc = "ขยายแผนที่",
-                    testTag = "btn_map_zoom_in",
-                    onClick = { zoomLevel = (zoomLevel + 1.0).coerceIn(3.0, 18.8) }
-                )
-                MapControlCircleButton(
-                    label = "−",
-                    contentDesc = "ย่อแผนที่",
-                    testTag = "btn_map_zoom_out",
-                    onClick = { zoomLevel = (zoomLevel - 1.0).coerceIn(3.0, 18.8) }
-                )
-                Box(
-                    contentAlignment = Alignment.Center,
+                // Grouped + / - Zoom Pill with 48dp accessible touch targets
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xF014111A),
+                    border = BorderStroke(1.dp, CrimsonBorderGlow),
+                    shadowElevation = 6.dp
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Surface(
+                            onClick = { zoomLevel = (zoomLevel + 1.0).coerceIn(3.0, 18.8) },
+                            color = Color.Transparent,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("btn_map_zoom_in")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "ขยายแผนที่",
+                                    tint = TextHudPrimary,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                        HorizontalDivider(
+                            modifier = Modifier.width(28.dp),
+                            thickness = 1.dp,
+                            color = HairlineBorder
+                        )
+                        Surface(
+                            onClick = { zoomLevel = (zoomLevel - 1.0).coerceIn(3.0, 18.8) },
+                            color = Color.Transparent,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("btn_map_zoom_out")
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Remove,
+                                    contentDescription = "ย่อแผนที่",
+                                    tint = TextHudPrimary,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Auto-Fit Work Zone Button
+                Surface(
+                    onClick = { fitMapBoundsToTarget() },
+                    shape = CircleShape,
+                    color = Color(0xF014111A),
+                    border = BorderStroke(1.dp, CrimsonNeon.copy(alpha = 0.7f)),
+                    shadowElevation = 6.dp,
                     modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xEB15121B))
-                        .border(1.dp, CrimsonNeon.copy(alpha = 0.7f), CircleShape)
-                        .clickable { fitMapBoundsToTarget() }
+                        .size(48.dp)
                         .testTag("btn_map_auto_fit")
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.CenterFocusStrong,
-                        contentDescription = "จัดกึ่งกลางโซน",
-                        tint = CrimsonNeon,
-                        modifier = Modifier.size(20.dp)
-                    )
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.CenterFocusStrong,
+                            contentDescription = "จัดกึ่งกลางโซน",
+                            tint = CrimsonNeon,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
+
+                // Recenter on Rider Live GPS
                 if (userLatitude != null && userLongitude != null) {
-                    Box(
-                        contentAlignment = Alignment.Center,
+                    Surface(
+                        onClick = {
+                            centerLat = userLatitude
+                            centerLng = userLongitude
+                            zoomLevel = 15.2
+                        },
+                        shape = CircleShape,
+                        color = Color(0xF014111A),
+                        border = BorderStroke(1.dp, EmeraldSRank.copy(alpha = 0.7f)),
+                        shadowElevation = 6.dp,
                         modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xEB15121B))
-                            .border(1.dp, EmeraldSRank.copy(alpha = 0.7f), CircleShape)
-                            .clickable {
-                                centerLat = userLatitude
-                                centerLng = userLongitude
-                                zoomLevel = 15.2
-                            }
+                            .size(48.dp)
                             .testTag("btn_map_recenter_gps")
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.MyLocation,
-                            contentDescription = "ไปยังตำแหน่งฉัน",
-                            tint = EmeraldSRank,
-                            modifier = Modifier.size(20.dp)
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.MyLocation,
+                                contentDescription = "ไปยังตำแหน่งฉัน",
+                                tint = EmeraldSRank,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -867,7 +1012,7 @@ fun InteractiveZoneMapCanvas(
             Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 64.dp, start = 14.dp, end = 14.dp)
+                    .padding(top = (attributionTopPaddingDp ?: 64).dp, start = 14.dp, end = 14.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color(0xEE180D13))
                     .border(1.dp, AmberWarning.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
@@ -903,13 +1048,19 @@ fun InteractiveZoneMapCanvas(
             }
         }
 
-        // OpenStreetMap Attribution Badge (Mandatory & Always Visible)
+        // OpenStreetMap Attribution Badge (Mandatory & Always Unobscured)
         Row(
             modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = 10.dp, bottom = 10.dp)
+                .align(if (attributionTopPaddingDp != null) Alignment.TopStart else Alignment.BottomStart)
+                .then(
+                    if (attributionTopPaddingDp != null) {
+                        Modifier.padding(start = 12.dp, top = attributionTopPaddingDp.dp)
+                    } else {
+                        Modifier.padding(start = 10.dp, bottom = 10.dp)
+                    }
+                )
                 .clip(RoundedCornerShape(8.dp))
-                .background(Color(0xD90B090E))
+                .background(Color(0xCC0B090E))
                 .border(1.dp, HairlineBorder, RoundedCornerShape(8.dp))
                 .padding(horizontal = 8.dp, vertical = 4.dp)
                 .testTag("osm_attribution_badge"),
@@ -930,31 +1081,5 @@ fun InteractiveZoneMapCanvas(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun MapControlCircleButton(
-    label: String,
-    contentDesc: String,
-    testTag: String,
-    onClick: () -> Unit
-) {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(44.dp)
-            .clip(CircleShape)
-            .background(Color(0xEB15121B))
-            .border(1.dp, CrimsonBorderGlow, CircleShape)
-            .clickable(onClick = onClick)
-            .testTag(testTag)
-    ) {
-        Text(
-            text = label,
-            color = TextHudPrimary,
-            fontWeight = FontWeight.Bold,
-            fontSize = 18.sp
-        )
     }
 }

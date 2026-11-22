@@ -15,13 +15,13 @@ import kotlin.math.sqrt
 enum class AppScreen(val titleTh: String, val titleEn: String) {
     DASHBOARD("ภาพรวม", "Dashboard"),
     AI_ASSISTANT("AI ผู้ช่วย", "AI Assistant"),
-    SMART_MAP("แผนที่", "Smart Map"),
+    SMART_MAP("โซนรับงาน", "Work Zone"),
     EARNINGS("รายได้", "Earnings"),
     PROFILE("โปรไฟล์", "Profile")
 }
 
 enum class PinCategory(val labelTh: String) {
-    FIXPOINT("หมุด FixPoint"),
+    FIXPOINT("โซนรับงาน"),
     HOTZONE("โซนฮอตสปอต"),
     RESTAURANT("ร้านอาหาร/จุดรับ"),
     FUEL("ปั๊มน้ำมัน"),

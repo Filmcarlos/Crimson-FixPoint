@@ -104,13 +104,23 @@ class ExampleRobolectricTest {
         assertEquals(AppScreen.AI_ASSISTANT, viewModel.uiState.value.currentScreen)
         composeTestRule.onNodeWithTag("screen_reader_control_card").assertIsDisplayed()
 
-        // 3. Navigate to Smart Map (Destination 3) — verify OSM map & attribution
+        // 3. Navigate to Work Zone Map (Destination 3) — verify OSM map, Work Zone UI & zero tap-through on + / -
         composeTestRule.onNodeWithTag("nav_tab_smart_map").performClick()
         composeTestRule.waitForIdle()
         assertEquals(AppScreen.SMART_MAP, viewModel.uiState.value.currentScreen)
         composeTestRule.onNodeWithTag("smart_map_osm_canvas").assertIsDisplayed()
         composeTestRule.onNodeWithTag("osm_attribution_badge").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("chip_layer_heatmap").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("work_zone_control_panel").assertIsDisplayed()
+
+        // Regression test: tapping +, -, and auto-fit MUST NOT bleed through to drop or move pins
+        val pinsBeforeZoom = viewModel.uiState.value.savedLocations.size
+        val activeLatBeforeZoom = viewModel.uiState.value.activePin?.latitude
+        composeTestRule.onNodeWithTag("btn_map_zoom_in").performClick()
+        composeTestRule.onNodeWithTag("btn_map_zoom_out").performClick()
+        composeTestRule.onNodeWithTag("btn_map_auto_fit").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(pinsBeforeZoom, viewModel.uiState.value.savedLocations.size)
+        assertEquals(activeLatBeforeZoom, viewModel.uiState.value.activePin?.latitude)
 
         // 4. Navigate to Earnings (Destination 4)
         composeTestRule.onNodeWithTag("nav_tab_earnings").performClick()

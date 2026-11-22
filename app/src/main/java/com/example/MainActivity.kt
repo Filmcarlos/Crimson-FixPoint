@@ -400,9 +400,6 @@ fun CrimsonFixPointApp(
                                     uiState = uiState,
                                     onMapTapPin = { lat, lng -> viewModel.onMapTapPin(lat, lng) },
                                     onSetMapTapMode = { mode -> viewModel.setMapTapActionMode(mode) },
-                                    onSetNewPinCategory = { cat -> viewModel.setNewPinCategory(cat) },
-                                    onUpdateLayerFilters = { transform -> viewModel.updateMapLayerFilters(transform) },
-                                    onSelectMapPinForSheet = { id -> viewModel.selectMapPinForSheet(id) },
                                     onSelectActivePin = { id -> viewModel.selectActivePin(id) },
                                     onSaveCurrentLocation = { name, move, cat ->
                                         viewModel.saveCurrentLocation(name, move, cat)
@@ -412,7 +409,6 @@ fun CrimsonFixPointApp(
                                     },
                                     onDeletePin = { id -> viewModel.deleteSavedLocation(id) },
                                     onSetZoneRadiusKm = { km -> viewModel.setZoneRadiusKm(km) },
-                                    onSearchNearbyFuel = { viewModel.searchNearbyFuelStations(forceRefresh = true) },
                                     onCopyCoordinates = copyCoordinates,
                                     onShareCoordinates = shareCoordinates
                                 )
@@ -462,12 +458,18 @@ fun CrimsonFixPointApp(
                         }
                     }
 
-                    // Sleek Floating Status Toast Banner
+                    // Sleek Floating Status Toast Banner (positioned clear of the Work Zone bottom dock on Map screen)
                     if (activeBanner != null) {
+                        val isMapScreen = uiState.currentScreen == AppScreen.SMART_MAP
                         Box(
                             modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(horizontal = 18.dp, vertical = 14.dp)
+                                .align(if (isMapScreen) Alignment.TopCenter else Alignment.BottomCenter)
+                                .padding(
+                                    start = 18.dp,
+                                    end = 18.dp,
+                                    top = if (isMapScreen) 136.dp else 14.dp,
+                                    bottom = 14.dp
+                                )
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(Color(0xF5181018))
