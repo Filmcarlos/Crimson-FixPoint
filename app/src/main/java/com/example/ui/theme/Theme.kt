@@ -8,20 +8,31 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 
+object CrimsonSpacing {
+    val xs = 4.dp
+    val sm = 8.dp
+    val md = 12.dp
+    val lg = 16.dp
+    val xl = 24.dp
+    val xxl = 32.dp
+    val screenHorizontal = 16.dp
+    val bottomDockClearance = 108.dp
+}
+
 private val CrimsonFixPoint2ColorScheme = darkColorScheme(
     primary = CrimsonRed,
-    onPrimary = Color.White,
+    onPrimary = TextHudPrimary,
     primaryContainer = DeepCrimson,
     onPrimaryContainer = TextHudPrimary,
     secondary = EmeraldSRank,
     onSecondary = ObsidianBlack,
     secondaryContainer = Color(0xFF064E3B),
     onSecondaryContainer = Color(0xFFD1FAE5),
-    tertiary = AmberWarning,
-    onTertiary = ObsidianBlack,
+    tertiary = CrimsonNeon,
+    onTertiary = TextHudPrimary,
     background = ObsidianBlack,
     onBackground = TextHudPrimary,
-    surface = CarbonDark,
+    surface = SurfaceLevel1,
     onSurface = TextHudPrimary,
     surfaceVariant = SurfaceLevel2,
     onSurfaceVariant = TextHudSecondary,
@@ -30,7 +41,7 @@ private val CrimsonFixPoint2ColorScheme = darkColorScheme(
     surfaceContainer = SurfaceLevel2,
     surfaceContainerHigh = SurfaceElevated,
     error = BloodRed,
-    onError = Color.White,
+    onError = TextHudPrimary,
     outline = HairlineBorder,
     outlineVariant = CrimsonBorderGlow
 )

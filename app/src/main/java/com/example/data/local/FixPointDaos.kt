@@ -107,3 +107,24 @@ interface AnalyzedOrderDao {
     @Query("DELETE FROM analyzed_orders")
     suspend fun clearAll()
 }
+
+@Dao
+interface JobOfferDao {
+    @Query("SELECT * FROM job_offers ORDER BY created_at_millis DESC")
+    fun observeAllOffers(): Flow<List<JobOfferEntity>>
+
+    @Query("SELECT * FROM job_offers ORDER BY created_at_millis DESC")
+    suspend fun getAllOffersSnapshot(): List<JobOfferEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertOffer(offer: JobOfferEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertOffers(offers: List<JobOfferEntity>)
+
+    @Query("DELETE FROM job_offers WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM job_offers")
+    suspend fun clearAll()
+}

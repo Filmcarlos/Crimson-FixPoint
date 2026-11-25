@@ -13,9 +13,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TransactionEntity::class,
         DailyMetricsEntity::class,
         WorkSessionEntity::class,
-        AnalyzedOrderEntity::class
+        AnalyzedOrderEntity::class,
+        JobOfferEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class FixPointDatabase : RoomDatabase() {
@@ -24,6 +25,7 @@ abstract class FixPointDatabase : RoomDatabase() {
     abstract fun dailyMetricsDao(): DailyMetricsDao
     abstract fun workSessionDao(): WorkSessionDao
     abstract fun analyzedOrderDao(): AnalyzedOrderDao
+    abstract fun jobOfferDao(): JobOfferDao
 
     companion object {
         const val DB_NAME = "crimson_fixpoint_v2.db"
@@ -94,6 +96,46 @@ abstract class FixPointDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Schema v2 -> v3 migration:
+         * Adds job_offers table for Multi-Platform Job Radar persistence.
+         */
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `job_offers` (
+                        `id` TEXT NOT NULL,
+                        `signature_hash` TEXT NOT NULL,
+                        `platform` TEXT NOT NULL,
+                        `source` TEXT NOT NULL,
+                        `pickup_name` TEXT NOT NULL,
+                        `dropoff_name` TEXT NOT NULL,
+                        `payout_baht` REAL NOT NULL,
+                        `trip_distance_km` REAL NOT NULL,
+                        `dead_mileage_km` REAL NOT NULL,
+                        `estimated_minutes` INTEGER,
+                        `pickup_lat` REAL,
+                        `pickup_lng` REAL,
+                        `distance_from_rider_km` REAL,
+                        `net_profit_baht` REAL NOT NULL,
+                        `earnings_per_km` REAL NOT NULL,
+                        `earnings_per_hour` REAL,
+                        `smart_score` INTEGER NOT NULL,
+                        `grade` TEXT NOT NULL,
+                        `confidence_score` REAL NOT NULL,
+                        `created_at_millis` INTEGER NOT NULL,
+                        `expires_at_millis` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `is_duplicate_merged` INTEGER NOT NULL,
+                        `raw_summary` TEXT NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: FixPointDatabase? = null
 
@@ -104,7 +146,7 @@ abstract class FixPointDatabase : RoomDatabase() {
                     FixPointDatabase::class.java,
                     DB_NAME
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { INSTANCE = it }
             }

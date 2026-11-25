@@ -30,19 +30,21 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.GpsNotFixed
 import androidx.compose.material.icons.filled.GpsOff
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Map
-import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material.icons.outlined.AutoAwesome
-import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Map
-import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Sensors
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -77,6 +79,7 @@ import com.example.model.EarningsChartBucket
 import com.example.model.ExpenseCategoryBreakdown
 import com.example.model.GpsLockState
 import com.example.model.OrderGrade
+import com.example.model.SecondaryScreen
 import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CarbonDark
 import com.example.ui.theme.CrimsonBorderGlow
@@ -392,7 +395,10 @@ fun CrimsonTopHeader(
     satellitesUsed: Int,
     isWorkSessionActive: Boolean,
     onGpsPillClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    secondaryScreen: SecondaryScreen? = null,
+    onMenuClick: () -> Unit = {},
+    onBackFromSecondary: () -> Unit = {}
 ) {
     val gpsColor by animateColorAsState(
         targetValue = when (lockState) {
@@ -412,35 +418,57 @@ fun CrimsonTopHeader(
         modifier = modifier
             .fillMaxWidth()
             .background(ObsidianBlack)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.weight(1f)
         ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(CrimsonRed, DeepCrimsonGlow)
+            if (secondaryScreen != null) {
+                Surface(
+                    onClick = onBackFromSecondary,
+                    shape = RoundedCornerShape(10.dp),
+                    color = SurfaceLevel2,
+                    border = BorderStroke(1.dp, HairlineBorder),
+                    modifier = Modifier
+                        .size(40.dp)
+                        .testTag("btn_back_from_secondary")
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "ย้อนกลับ",
+                            tint = TextHudPrimary,
+                            modifier = Modifier.size(20.dp)
                         )
+                    }
+                }
+            } else {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(CrimsonRed, DeepCrimsonGlow)
+                            )
+                        )
+                ) {
+                    Text(
+                        text = "CF",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
                     )
-            ) {
-                Text(
-                    text = "CF",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold
-                )
+                }
             }
             Column {
                 Text(
-                    text = "CRIMSON FIXPOINT",
+                    text = if (secondaryScreen != null) "MENU & ACCOUNT" else "CRIMSON FIXPOINT",
                     style = MaterialTheme.typography.labelSmall.copy(
                         letterSpacing = 1.4.sp,
                         fontWeight = FontWeight.Bold
@@ -448,40 +476,42 @@ fun CrimsonTopHeader(
                     color = CrimsonNeon
                 )
                 Text(
-                    text = currentScreen.titleTh,
+                    text = secondaryScreen?.titleTh ?: currentScreen.titleTh,
                     style = MaterialTheme.typography.titleMedium,
                     color = TextHudPrimary,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
 
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            if (isWorkSessionActive) {
+            if (isWorkSessionActive && secondaryScreen == null) {
                 StatusPillBadge(
-                    text = "กำลังวิ่งงาน",
+                    text = "LIVE",
                     accentColor = EmeraldSRank
                 )
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 modifier = Modifier
                     .clip(RoundedCornerShape(999.dp))
                     .background(SurfaceLevel2)
                     .border(1.dp, gpsColor.copy(alpha = 0.5f), RoundedCornerShape(999.dp))
                     .clickable(onClick = onGpsPillClick)
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .padding(horizontal = 9.dp, vertical = 6.dp)
                     .testTag("top_bar_gps_status")
             ) {
                 Icon(
                     imageVector = gpsIcon,
                     contentDescription = "สถานะ GPS",
                     tint = gpsColor,
-                    modifier = Modifier.size(15.dp)
+                    modifier = Modifier.size(14.dp)
                 )
                 Text(
                     text = when (lockState) {
@@ -494,23 +524,42 @@ fun CrimsonTopHeader(
                     fontWeight = FontWeight.Bold
                 )
             }
+            Surface(
+                onClick = onMenuClick,
+                shape = RoundedCornerShape(10.dp),
+                color = SurfaceLevel2,
+                border = BorderStroke(1.dp, if (secondaryScreen != null) CrimsonNeon else HairlineBorder),
+                modifier = Modifier
+                    .size(40.dp)
+                    .testTag("btn_open_secondary_menu")
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Menu,
+                        contentDescription = "เปิดเมนูเพิ่มเติม",
+                        tint = if (secondaryScreen != null) CrimsonNeon else TextHudPrimary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
         }
     }
 }
 
 private fun navIconFor(screen: AppScreen, selected: Boolean): ImageVector = when (screen) {
-    AppScreen.DASHBOARD -> if (selected) Icons.Filled.Dashboard else Icons.Outlined.Dashboard
-    AppScreen.AI_ASSISTANT -> if (selected) Icons.Filled.AutoAwesome else Icons.Outlined.AutoAwesome
-    AppScreen.SMART_MAP -> if (selected) Icons.Filled.Map else Icons.Outlined.Map
+    AppScreen.HOME -> if (selected) Icons.Filled.Home else Icons.Outlined.Home
+    AppScreen.JOB_RADAR -> if (selected) Icons.Filled.Sensors else Icons.Outlined.Sensors
+    AppScreen.LIVE_MAP -> if (selected) Icons.Filled.Map else Icons.Outlined.Map
     AppScreen.EARNINGS -> if (selected) Icons.Filled.AccountBalanceWallet else Icons.Outlined.AccountBalanceWallet
-    AppScreen.PROFILE -> if (selected) Icons.Filled.Person else Icons.Outlined.Person
+    AppScreen.AI_ASSISTANT -> if (selected) Icons.Filled.AutoAwesome else Icons.Outlined.AutoAwesome
 }
 
 @Composable
 fun CrimsonBottomNavBar(
     currentScreen: AppScreen,
     onSelectScreen: (AppScreen) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    activeRadarJobsCount: Int = 0
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -555,6 +604,15 @@ fun CrimsonBottomNavBar(
                             tint = contentColor,
                             modifier = Modifier.size(21.dp)
                         )
+                        if (screen == AppScreen.JOB_RADAR && activeRadarJobsCount > 0) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(CrimsonNeon)
+                            )
+                        }
                     }
                     Text(
                         text = screen.titleTh,
@@ -576,7 +634,8 @@ fun CrimsonBottomNavBar(
 fun CrimsonNavRail(
     currentScreen: AppScreen,
     onSelectScreen: (AppScreen) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    activeRadarJobsCount: Int = 0
 ) {
     NavigationRail(
         modifier = modifier.fillMaxHeight(),
@@ -590,10 +649,21 @@ fun CrimsonNavRail(
                 selected = selected,
                 onClick = { onSelectScreen(screen) },
                 icon = {
-                    Icon(
-                        imageVector = navIconFor(screen, selected),
-                        contentDescription = screen.titleTh
-                    )
+                    Box {
+                        Icon(
+                            imageVector = navIconFor(screen, selected),
+                            contentDescription = screen.titleTh
+                        )
+                        if (screen == AppScreen.JOB_RADAR && activeRadarJobsCount > 0) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(CrimsonNeon)
+                            )
+                        }
+                    }
                 },
                 label = {
                     Text(

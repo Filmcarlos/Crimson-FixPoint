@@ -13,11 +13,19 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 enum class AppScreen(val titleTh: String, val titleEn: String) {
-    DASHBOARD("ภาพรวม", "Dashboard"),
-    AI_ASSISTANT("AI ผู้ช่วย", "AI Assistant"),
-    SMART_MAP("โซนรับงาน", "Work Zone"),
+    HOME("หน้าหลัก", "Home"),
+    JOB_RADAR("เรดาร์งาน", "Job Radar"),
+    LIVE_MAP("แผนที่โซน", "Live Map"),
     EARNINGS("รายได้", "Earnings"),
-    PROFILE("โปรไฟล์", "Profile")
+    AI_ASSISTANT("AI ผู้ช่วย", "AI Assistant")
+}
+
+enum class SecondaryScreen(val titleTh: String, val subtitleTh: String) {
+    SETTINGS("ตั้งค่าระบบและสิทธิ์", "GPS, การแจ้งเตือน, สิทธิ์ระบบ"),
+    PROFILE("โปรไฟล์ไรเดอร์และรถ", "เกณฑ์คำนวณ AI และความจุถังน้ำมัน"),
+    CLOUD_SYNC("Cloud Sync & สำรองข้อมูล", "Offline-first Room + เตรียมซิงก์คลาวด์สมาชิก"),
+    JOB_HISTORY("ประวัติงานและ OCR", "รายการออเดอร์ที่วิเคราะห์และงานเรดาร์"),
+    MEMBERSHIP("สมาชิก Rider Pro", "สถานะแพ็กเกจและสิทธิ์ Cloud Readiness")
 }
 
 enum class PinCategory(val labelTh: String) {

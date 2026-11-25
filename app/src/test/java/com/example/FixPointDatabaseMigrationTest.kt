@@ -7,9 +7,14 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.FixPointDatabase
 import com.example.data.local.RiderPreferencesDataStore
 import com.example.data.repository.FixPointRepository
+import com.example.data.repository.OfflineCloudSyncPrepManager
 import com.example.model.AnalyzedOrderRecord
+import com.example.model.DeliveryPlatform
+import com.example.model.DetectedJobOffer
 import com.example.model.EarningsRecordType
 import com.example.model.EarningsTransaction
+import com.example.model.JobOfferSource
+import com.example.model.JobOfferStatus
 import com.example.model.OrderGrade
 import com.example.model.OrderInputSource
 import com.example.model.PinCategory
@@ -18,6 +23,7 @@ import com.example.model.WorkSessionRecord
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -30,9 +36,9 @@ import org.robolectric.annotation.Config
 class FixPointDatabaseMigrationTest {
 
     @Test
-    fun roomMigration_v1ToV2_preservesExistingPinsTransactionsMetricsAndAddsNewTables() = runBlocking {
+    fun roomMigration_v1ToV3_preservesExistingPinsTransactionsMetricsAndAddsV2AndV3Tables() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val dbName = "test_migration_v1_v2_${System.currentTimeMillis()}.db"
+        val dbName = "test_migration_v1_v3_${System.currentTimeMillis()}.db"
         context.deleteDatabase(dbName)
 
         // 1. Create a real SQLite v1 database matching v1 schema and seed records
@@ -88,9 +94,9 @@ class FixPointDatabaseMigrationTest {
         )
         sqlite.close()
 
-        // 2. Open with Room v2 and execute MIGRATION_1_2
+        // 2. Open with Room v3 and execute MIGRATION_1_2 + MIGRATION_2_3
         val migratedDb = Room.databaseBuilder(context, FixPointDatabase::class.java, dbName)
-            .addMigrations(FixPointDatabase.MIGRATION_1_2)
+            .addMigrations(FixPointDatabase.MIGRATION_1_2, FixPointDatabase.MIGRATION_2_3)
             .allowMainThreadQueries()
             .build()
 
@@ -110,7 +116,7 @@ class FixPointDatabaseMigrationTest {
             assertEquals(1, metrics.size)
             assertEquals(48.2, metrics[0].gpsDistanceKm, 0.001)
 
-            // Verify new v2 tables work cleanly
+            // Verify v2 tables work cleanly
             migratedDb.workSessionDao().upsertSession(
                 com.example.data.local.WorkSessionEntity.fromDomain(
                     WorkSessionRecord("SES-1", "2026-11-21", 1000L, 4600_000L, 25.0, 6, 480.0, 28.0, false)
@@ -131,6 +137,33 @@ class FixPointDatabaseMigrationTest {
                 )
             )
             assertEquals(1, migratedDb.analyzedOrderDao().getAllOrdersSnapshot().size)
+
+            // Verify v3 job_offers table works cleanly
+            migratedDb.jobOfferDao().upsertOffer(
+                com.example.data.local.JobOfferEntity.fromDomain(
+                    DetectedJobOffer(
+                        id = "JOB-V3",
+                        signatureHash = "LINE_MAN|ร้านเจ๊ไฝ|95|35",
+                        platform = DeliveryPlatform.LINE_MAN,
+                        source = JobOfferSource.NOTIFICATION_LISTENER,
+                        pickupName = "ร้านเจ๊ไฝ",
+                        dropoffName = "ประตูน้ำ",
+                        payoutBaht = 95.0,
+                        tripDistanceKm = 3.5,
+                        deadMileageKm = 0.4,
+                        smartScore = 90,
+                        grade = OrderGrade.S,
+                        confidenceScore = 0.9f,
+                        createdAtMillis = 5000L,
+                        expiresAtMillis = 95_000L,
+                        status = JobOfferStatus.ACTIVE
+                    )
+                )
+            )
+            val offers = migratedDb.jobOfferDao().getAllOffersSnapshot()
+            assertEquals(1, offers.size)
+            assertEquals("JOB-V3", offers[0].id)
+            assertEquals(DeliveryPlatform.LINE_MAN.name, offers[0].platform)
         } finally {
             migratedDb.close()
             context.deleteDatabase(dbName)
@@ -138,7 +171,7 @@ class FixPointDatabaseMigrationTest {
     }
 
     @Test
-    fun repository_localJsonBackupAndRestore_roundTripsOfflineDataSafely() = runBlocking {
+    fun repository_localJsonBackupAndCloudSyncReadiness_roundTripsSchemaV3Safely() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val db1 = Room.inMemoryDatabaseBuilder(context, FixPointDatabase::class.java)
             .allowMainThreadQueries()
@@ -156,22 +189,49 @@ class FixPointDatabaseMigrationTest {
             sourceRepo.upsertTransaction(
                 EarningsTransaction("T-EXP", EarningsRecordType.INCOME, "2026-11-21", "งาน Grab", "รับงาน", 180.0, 6.0, 25, 2000L)
             )
+            sourceRepo.upsertJobOffer(
+                DetectedJobOffer(
+                    id = "JOB-EXP",
+                    signatureHash = "GRAB|อโศก|110|40",
+                    platform = DeliveryPlatform.GRAB,
+                    source = JobOfferSource.OCR_SCREEN_READER,
+                    pickupName = "อโศก",
+                    dropoffName = "ทองหล่อ",
+                    payoutBaht = 110.0,
+                    tripDistanceKm = 4.0,
+                    smartScore = 88,
+                    grade = OrderGrade.S,
+                    createdAtMillis = 3000L,
+                    expiresAtMillis = 93_000L
+                )
+            )
+
+            // Verify Cloud Sync prep manager reports honest offline-first counts
+            val syncPrep = OfflineCloudSyncPrepManager(db1, prefsStore)
+            val syncState = syncPrep.evaluateReadiness()
+            assertFalse(syncState.backendProvisioned)
+            assertEquals(3, syncState.pendingSyncRecordsCount)
+            assertTrue(syncPrep.requestCloudSync().isFailure)
 
             val json = sourceRepo.exportLocalBackupJson()
             assertTrue(json.contains("โซนพระราม 9"))
             assertTrue(json.contains("T-EXP"))
+            assertTrue(json.contains("JOB-EXP"))
 
             val targetRepo = FixPointRepository(context, db2, prefsStore)
             val result = targetRepo.importLocalBackupJson(json)
             assertTrue(result.isSuccess)
-            assertTrue((result.getOrNull() ?: 0) >= 2)
+            assertTrue((result.getOrNull() ?: 0) >= 3)
 
             val restoredPins = targetRepo.savedPinsFlow.first()
             val restoredTxns = targetRepo.transactionsFlow.first()
+            val restoredOffers = targetRepo.jobOffersFlow.first()
             assertEquals(1, restoredPins.size)
             assertEquals(PinCategory.HOTZONE, restoredPins[0].category)
             assertEquals(1, restoredTxns.size)
             assertEquals(180.0, restoredTxns[0].amountBaht, 0.001)
+            assertEquals(1, restoredOffers.size)
+            assertEquals("JOB-EXP", restoredOffers[0].id)
             assertNotNull(restoredPins.firstOrNull { it.id == "P-EXP" })
         } finally {
             db1.close()

@@ -19,12 +19,17 @@ import com.example.ai.OrderOcrParser
 import com.example.ai.RiderIntelligenceEngine
 import com.example.data.local.StoredRiderPreferences
 import com.example.data.repository.FixPointRepository
+import com.example.integration.DeliveryAdapterRegistry
+import com.example.integration.JobRadarEngine
 import com.example.model.AnalyzedOrderRecord
 import com.example.model.AppScreen
+import com.example.model.CloudSyncState
 import com.example.model.CoordinateFormat
 import com.example.model.CustomExpenseItem
 import com.example.model.DailyBreakEvenState
 import com.example.model.DailyWorkMetrics
+import com.example.model.DeliveryPlatform
+import com.example.model.DetectedJobOffer
 import com.example.model.EarningsGoals
 import com.example.model.EarningsHistoryFilter
 import com.example.model.EarningsPeriod
@@ -34,6 +39,9 @@ import com.example.model.FuelEstimateState
 import com.example.model.GeoMath
 import com.example.model.GpsLockState
 import com.example.model.JobIncomeEntry
+import com.example.model.JobOfferSource
+import com.example.model.JobOfferStatus
+import com.example.model.JobRankingMode
 import com.example.model.LiveGnssTelemetry
 import com.example.model.MapLayerFilters
 import com.example.model.MapTapActionMode
@@ -42,11 +50,13 @@ import com.example.model.OrderAnalysisResult
 import com.example.model.OrderInputSource
 import com.example.model.ParsedOrderDraft
 import com.example.model.PinCategory
+import com.example.model.PlatformConnectionStatus
 import com.example.model.PrivacyPreferences
 import com.example.model.RiderProfileConfig
 import com.example.model.SatelliteBarItem
 import com.example.model.SavedLocationItem
 import com.example.model.ScreenReaderState
+import com.example.model.SecondaryScreen
 import com.example.model.SmartEarningsCalculator
 import com.example.model.SmartEarningsState
 import com.example.model.StopPoiItem
@@ -55,7 +65,9 @@ import com.example.model.WorkSessionRecord
 import com.example.model.ZoneMonitorStatus
 import com.example.service.GpsKeepAliveService
 import com.example.service.GpsServiceRuntimeBus
+import com.example.service.JobRadarRuntimeBus
 import com.example.service.LocationService
+import com.example.service.RawNotificationJobSignal
 import com.example.service.ScreenReaderCaptureService
 import com.example.service.ScreenReaderRuntimeBus
 import com.example.service.ServiceZoneConfig
@@ -79,7 +91,18 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 data class FixPointUiState(
-    val currentScreen: AppScreen = AppScreen.DASHBOARD,
+    val currentScreen: AppScreen = AppScreen.HOME,
+    val secondaryScreen: SecondaryScreen? = null,
+    // Multi-Platform Job Radar (Phase 4)
+    val detectedJobOffers: List<DetectedJobOffer> = emptyList(),
+    val jobRankingMode: JobRankingMode = JobRankingMode.SMART_BEST_JOB,
+    val notificationAccessGranted: Boolean = false,
+    val lineManEnabled: Boolean = true,
+    val grabEnabled: Boolean = true,
+    val shopeeFoodEnabled: Boolean = true,
+    val radarClockTickMillis: Long = System.currentTimeMillis(),
+    // Cloud Sync Readiness (Phase 6)
+    val cloudSyncState: CloudSyncState = CloudSyncState(),
     // GPS Lock & Zone Monitoring (preserved & enhanced)
     val isLockEnabled: Boolean = false,
     val lockState: GpsLockState = GpsLockState.OFF,
@@ -144,6 +167,32 @@ data class FixPointUiState(
 
     val activeWorkSession: WorkSessionRecord?
         get() = workSessions.firstOrNull { it.isActive }
+
+    fun isPlatformAdapterEnabled(platform: DeliveryPlatform): Boolean = when (platform) {
+        DeliveryPlatform.LINE_MAN -> lineManEnabled
+        DeliveryPlatform.GRAB -> grabEnabled
+        DeliveryPlatform.SHOPEE_FOOD -> shopeeFoodEnabled
+        DeliveryPlatform.OTHER -> true
+    }
+
+    val rankedActiveJobOffers: List<DetectedJobOffer>
+        get() = JobRadarEngine.rankOffers(
+            offers = detectedJobOffers.filter { isPlatformAdapterEnabled(it.platform) },
+            mode = jobRankingMode,
+            nowMillis = radarClockTickMillis
+        )
+
+    val platformConnectionStatuses: List<PlatformConnectionStatus>
+        get() = JobRadarEngine.evaluatePlatformStatuses(
+            notificationAccessGranted = notificationAccessGranted,
+            screenReaderState = screenReaderState,
+            offers = detectedJobOffers,
+            adapterEnabledMap = mapOf(
+                DeliveryPlatform.LINE_MAN to lineManEnabled,
+                DeliveryPlatform.GRAB to grabEnabled,
+                DeliveryPlatform.SHOPEE_FOOD to shopeeFoodEnabled
+            )
+        )
 }
 
 class FixPointViewModel : ViewModel() {
@@ -158,6 +207,8 @@ class FixPointViewModel : ViewModel() {
 
     private var viewModelRepeatAlertJob: Job? = null
     private var sessionTickerJob: Job? = null
+    private var radarTickerJob: Job? = null
+    private var routeNextOcrToRadar: Boolean = false
     private var lastGpsTrackLat: Double? = null
     private var lastGpsTrackLng: Double? = null
 
@@ -202,6 +253,18 @@ class FixPointViewModel : ViewModel() {
         viewModelScope.launch {
             ScreenReaderRuntimeBus.capturedBitmaps.collect { bitmap ->
                 processOrderBitmap(bitmap, OrderInputSource.SCREEN_READER)
+            }
+        }
+        viewModelScope.launch {
+            JobRadarRuntimeBus.incomingSignals.collect { signal ->
+                handleIncomingNotificationSignal(signal)
+            }
+        }
+        viewModelScope.launch {
+            JobRadarRuntimeBus.isListenerConnected.collectLatest { connected ->
+                if (connected) {
+                    _uiState.update { it.copy(notificationAccessGranted = true) }
+                }
             }
         }
     }
@@ -312,6 +375,24 @@ class FixPointViewModel : ViewModel() {
         viewModelScope.launch {
             repo.analyzedOrdersFlow.collectLatest { orders ->
                 _uiState.update { it.copy(analyzedOrders = orders) }
+                refreshCloudSyncReadiness()
+            }
+        }
+        viewModelScope.launch {
+            repo.jobOffersFlow.collectLatest { offers ->
+                val expiredSynced = JobRadarEngine.expireOutdatedOffers(offers)
+                _uiState.update {
+                    it.copy(
+                        detectedJobOffers = expiredSynced,
+                        radarClockTickMillis = System.currentTimeMillis()
+                    )
+                }
+                if (expiredSynced.any { it.status == JobOfferStatus.ACTIVE }) {
+                    ensureRadarTickerRunning()
+                } else {
+                    radarTickerJob?.cancel()
+                    radarTickerJob = null
+                }
             }
         }
 
@@ -351,10 +432,20 @@ class FixPointViewModel : ViewModel() {
                 measurementUnit = prefs.measurementUnit,
                 updateFrequency = prefs.updateFrequency,
                 coordinateFormat = prefs.coordinateFormat,
-                keepScreenOn = prefs.keepScreenOn
+                keepScreenOn = prefs.keepScreenOn,
+                jobRankingMode = prefs.jobRankingMode,
+                lineManEnabled = prefs.lineManEnabled,
+                grabEnabled = prefs.grabEnabled,
+                shopeeFoodEnabled = prefs.shopeeFoodEnabled,
+                cloudSyncState = state.cloudSyncState.copy(
+                    isMembershipProEnabled = prefs.membershipProEnabled,
+                    cloudSyncOptIn = prefs.cloudSyncOptIn,
+                    lastLocalBackupMillis = prefs.lastLocalBackupMillis.takeIf { it > 0L }
+                )
             )
         }
         syncZoneConfigToBus()
+        refreshCloudSyncReadiness()
     }
 
     private fun ensureSessionTickerRunning() {
@@ -367,12 +458,62 @@ class FixPointViewModel : ViewModel() {
         }
     }
 
+    private fun ensureRadarTickerRunning() {
+        if (radarTickerJob?.isActive == true) return
+        radarTickerJob = viewModelScope.launch {
+            while (isActive) {
+                delay(1_000L)
+                val now = System.currentTimeMillis()
+                val currentOffers = _uiState.value.detectedJobOffers
+                val newlyExpired = currentOffers.filter {
+                    it.status == JobOfferStatus.ACTIVE && now >= it.expiresAtMillis
+                }
+                if (newlyExpired.isNotEmpty()) {
+                    val updated = JobRadarEngine.expireOutdatedOffers(currentOffers, now)
+                    _uiState.update {
+                        it.copy(detectedJobOffers = updated, radarClockTickMillis = now)
+                    }
+                    repository?.upsertJobOffers(
+                        newlyExpired.map { it.copy(status = JobOfferStatus.EXPIRED) }
+                    )
+                } else {
+                    _uiState.update { it.copy(radarClockTickMillis = now) }
+                }
+                if (_uiState.value.detectedJobOffers.none { it.status == JobOfferStatus.ACTIVE }) {
+                    break
+                }
+            }
+        }
+    }
+
     // =========================================================================
     // Navigation & Permissions
     // =========================================================================
 
     fun selectScreen(screen: AppScreen) {
-        _uiState.update { it.copy(currentScreen = screen) }
+        _uiState.update { it.copy(currentScreen = screen, secondaryScreen = null) }
+    }
+
+    fun openSecondaryScreen(secondary: SecondaryScreen?) {
+        _uiState.update { it.copy(secondaryScreen = secondary) }
+        if (secondary == SecondaryScreen.CLOUD_SYNC || secondary == SecondaryScreen.MEMBERSHIP) {
+            refreshCloudSyncReadiness()
+        }
+    }
+
+    fun navigateBack(): Boolean {
+        val s = _uiState.value
+        return when {
+            s.secondaryScreen != null -> {
+                _uiState.update { it.copy(secondaryScreen = null) }
+                true
+            }
+            s.currentScreen != AppScreen.HOME -> {
+                _uiState.update { it.copy(currentScreen = AppScreen.HOME) }
+                true
+            }
+            else -> false
+        }
     }
 
     fun refreshPermissionFlags(context: Context) {
@@ -410,6 +551,8 @@ class FixPointViewModel : ViewModel() {
                 true
             }
         }.getOrDefault(false)
+        val notifListenerGranted = JobRadarEngine.isNotificationListenerEnabled(appContext) ||
+            JobRadarRuntimeBus.isListenerConnected.value
 
         _uiState.update {
             it.copy(
@@ -418,6 +561,7 @@ class FixPointViewModel : ViewModel() {
                 hasBackgroundLocationPermission = bg,
                 hasNotificationPermission = notif,
                 isIgnoringBatteryOptimizations = batteryExempt,
+                notificationAccessGranted = notifListenerGranted,
                 permissionDeniedMessageTh = if (fine || coarse) null else it.permissionDeniedMessageTh
             )
         }
@@ -702,6 +846,14 @@ class FixPointViewModel : ViewModel() {
     private fun onNewGpsPositionEvaluated(lat: Double, lng: Double) {
         recalculateZoneEvaluation(triggerAlertsOnTransition = true)
         accumulateRealGpsDistance(lat, lng)
+        refreshJobOfferDistancesWithGps(lat, lng)
+    }
+
+    private fun refreshJobOfferDistancesWithGps(lat: Double, lng: Double) {
+        val current = _uiState.value.detectedJobOffers
+        if (current.none { it.pickupLat != null && it.pickupLng != null }) return
+        val updated = JobRadarEngine.refreshDistancesWithGps(current, lat, lng)
+        _uiState.update { it.copy(detectedJobOffers = updated) }
     }
 
     private fun accumulateRealGpsDistance(lat: Double, lng: Double) {
@@ -1031,13 +1183,16 @@ class FixPointViewModel : ViewModel() {
     fun processOrderImageUri(
         context: Context,
         uri: Uri,
-        source: OrderInputSource = OrderInputSource.SCREENSHOT_IMPORT
+        source: OrderInputSource = OrderInputSource.SCREENSHOT_IMPORT,
+        alsoSendToJobRadar: Boolean = false
     ) {
+        routeNextOcrToRadar = alsoSendToJobRadar
         _uiState.update {
             it.copy(
                 isRunningOcr = true,
                 ocrErrorMessageTh = null,
-                currentScreen = AppScreen.AI_ASSISTANT
+                currentScreen = if (alsoSendToJobRadar) AppScreen.JOB_RADAR else AppScreen.AI_ASSISTANT,
+                secondaryScreen = null
             )
         }
         viewModelScope.launch {
@@ -1064,8 +1219,11 @@ class FixPointViewModel : ViewModel() {
     }
 
     private fun handleOcrOutcome(outcome: OcrScanOutcome) {
+        val forwardToRadar = routeNextOcrToRadar
+        routeNextOcrToRadar = false
         when (outcome) {
             is OcrScanOutcome.Success -> {
+                val rawTextForRadar = outcome.draft.rawOcrText
                 val cleanDraft = if (_uiState.value.privacyPreferences.storeRawOcrText) {
                     outcome.draft
                 } else {
@@ -1085,6 +1243,12 @@ class FixPointViewModel : ViewModel() {
                             "ตรวจพบข้อมูลบางส่วน กรุณาตรวจสอบหรือกรอกช่องที่ขาด (${cleanDraft.missingFields.joinToString(", ")})"
                         } else null,
                         statusBannerMessageTh = "อ่านข้อความ OCR เสร็จสิ้น โปรดตรวจสอบความถูกต้องก่อนบันทึก"
+                    )
+                }
+                if (forwardToRadar && rawTextForRadar.isNotBlank()) {
+                    ingestJobOfferText(
+                        rawText = rawTextForRadar,
+                        source = JobOfferSource.OCR_SCREEN_READER
                     )
                 }
             }
@@ -1976,6 +2140,345 @@ class FixPointViewModel : ViewModel() {
         }
     }
 
+    // =========================================================================
+    // Phase 4 & 6: Multi-Platform Job Radar & Cloud Sync Readiness
+    // =========================================================================
+
+    fun setJobRankingMode(mode: JobRankingMode) {
+        _uiState.update {
+            it.copy(
+                jobRankingMode = mode,
+                statusBannerMessageTh = "จัดอันดับ Job Radar: ${mode.labelTh}"
+            )
+        }
+        val s = _uiState.value
+        viewModelScope.launch {
+            repository?.preferencesStore?.updateJobRadarPreferences(
+                rankingMode = mode,
+                lineManEnabled = s.lineManEnabled,
+                grabEnabled = s.grabEnabled,
+                shopeeFoodEnabled = s.shopeeFoodEnabled
+            )
+        }
+    }
+
+    fun togglePlatformAdapter(platform: DeliveryPlatform, enabled: Boolean) {
+        _uiState.update { s ->
+            when (platform) {
+                DeliveryPlatform.LINE_MAN -> s.copy(lineManEnabled = enabled)
+                DeliveryPlatform.GRAB -> s.copy(grabEnabled = enabled)
+                DeliveryPlatform.SHOPEE_FOOD -> s.copy(shopeeFoodEnabled = enabled)
+                DeliveryPlatform.OTHER -> s
+            }
+        }
+        val s = _uiState.value
+        viewModelScope.launch {
+            repository?.preferencesStore?.updateJobRadarPreferences(
+                rankingMode = s.jobRankingMode,
+                lineManEnabled = s.lineManEnabled,
+                grabEnabled = s.grabEnabled,
+                shopeeFoodEnabled = s.shopeeFoodEnabled
+            )
+        }
+    }
+
+    fun handleIncomingNotificationSignal(signal: RawNotificationJobSignal) {
+        val adapter = DeliveryAdapterRegistry.resolveForPackage(signal.packageName) ?: return
+        if (!_uiState.value.isPlatformAdapterEnabled(adapter.platform)) return
+        ingestJobOfferInternal(
+            rawText = signal.body,
+            title = signal.title,
+            packageName = signal.packageName,
+            source = JobOfferSource.NOTIFICATION_LISTENER,
+            pickupLat = null,
+            pickupLng = null,
+            nowMillis = signal.postedAtMillis,
+            silentIfUnparsed = true
+        )
+    }
+
+    fun ingestJobOfferText(
+        rawText: String,
+        source: JobOfferSource = JobOfferSource.MANUAL_OR_SHARED,
+        title: String = "",
+        pickupLat: Double? = null,
+        pickupLng: Double? = null
+    ): Boolean {
+        return ingestJobOfferInternal(
+            rawText = rawText,
+            title = title,
+            packageName = null,
+            source = source,
+            pickupLat = pickupLat,
+            pickupLng = pickupLng,
+            nowMillis = System.currentTimeMillis(),
+            silentIfUnparsed = false
+        )
+    }
+
+    private fun ingestJobOfferInternal(
+        rawText: String,
+        title: String,
+        packageName: String?,
+        source: JobOfferSource,
+        pickupLat: Double?,
+        pickupLng: Double?,
+        nowMillis: Long,
+        silentIfUnparsed: Boolean
+    ): Boolean {
+        val state = _uiState.value
+        val parsed = JobRadarEngine.parseToJobOffer(
+            rawText = rawText,
+            source = source,
+            profile = state.riderProfile,
+            fuelState = state.fuelState,
+            riderLat = state.telemetry.latitude,
+            riderLng = state.telemetry.longitude,
+            pickupLat = pickupLat,
+            pickupLng = pickupLng,
+            packageName = packageName,
+            title = title,
+            nowMillis = nowMillis
+        )
+        if (parsed == null) {
+            if (!silentIfUnparsed) {
+                _uiState.update {
+                    it.copy(statusBannerMessageTh = "ไม่พบข้อมูลค่าส่งหรือรายละเอียดงานที่เพียงพอในข้อความนี้")
+                }
+            }
+            return false
+        }
+
+        val duplicate = JobRadarEngine.isDuplicateOffer(state.detectedJobOffers, parsed)
+        if (duplicate != null) {
+            val merged = duplicate.copy(
+                isDuplicateMerged = true,
+                expiresAtMillis = maxOf(duplicate.expiresAtMillis, parsed.expiresAtMillis),
+                smartScore = maxOf(duplicate.smartScore, parsed.smartScore),
+                confidenceScore = maxOf(duplicate.confidenceScore, parsed.confidenceScore)
+            )
+            _uiState.update { s ->
+                s.copy(
+                    detectedJobOffers = s.detectedJobOffers.map { if (it.id == duplicate.id) merged else it },
+                    statusBannerMessageTh = "รวมสัญญาณงานซ้ำจาก ${parsed.platform.displayNameTh} แล้ว"
+                )
+            }
+            viewModelScope.launch { repository?.upsertJobOffer(merged) }
+            return true
+        }
+
+        _uiState.update { s ->
+            s.copy(
+                detectedJobOffers = listOf(parsed) + s.detectedJobOffers,
+                radarClockTickMillis = nowMillis,
+                statusBannerMessageTh = String.format(
+                    Locale.US,
+                    "ตรวจพบงานใหม่ %s ฿%.0f (เกรด %s)",
+                    parsed.platform.displayNameTh,
+                    parsed.payoutBaht,
+                    parsed.grade.label
+                )
+            )
+        }
+        ensureRadarTickerRunning()
+        viewModelScope.launch { repository?.upsertJobOffer(parsed) }
+        return true
+    }
+
+    fun acceptAndLogJobOffer(offerId: String): Boolean {
+        val state = _uiState.value
+        val offer = state.detectedJobOffers.firstOrNull { it.id == offerId } ?: return false
+        val updatedOffer = offer.copy(status = JobOfferStatus.ACCEPTED_LOGGED)
+        val now = System.currentTimeMillis()
+        val todayKey = DailyBreakEvenState.todayDateKey(now)
+
+        _uiState.update { s ->
+            s.copy(
+                detectedJobOffers = s.detectedJobOffers.map { if (it.id == offerId) updatedOffer else it }
+            )
+        }
+        viewModelScope.launch { repository?.upsertJobOffer(updatedOffer) }
+
+        val orderRecord = AnalyzedOrderRecord(
+            id = "ORD-RAD-${offer.id.takeLast(8)}-$now",
+            dateKey = todayKey,
+            source = when (offer.source) {
+                JobOfferSource.NOTIFICATION_LISTENER -> OrderInputSource.MANUAL_OR_TEXT
+                JobOfferSource.OCR_SCREEN_READER -> OrderInputSource.SCREENSHOT_IMPORT
+                JobOfferSource.MANUAL_OR_SHARED -> OrderInputSource.MANUAL_OR_TEXT
+            },
+            pickupName = offer.pickupName,
+            dropoffName = offer.dropoffName,
+            payoutBaht = offer.payoutBaht,
+            distanceKm = offer.tripDistanceKm,
+            deadMileageKm = offer.deadMileageKm,
+            estimatedMinutes = offer.estimatedMinutes ?: 0,
+            fuelCostBaht = (offer.payoutBaht - offer.netProfitBaht).coerceAtLeast(0.0),
+            netProfitBaht = offer.netProfitBaht,
+            earningsPerKm = offer.earningsPerKm,
+            earningsPerHour = offer.earningsPerHour ?: 0.0,
+            smartScore = offer.smartScore,
+            grade = offer.grade,
+            confidenceScore = offer.confidenceScore,
+            wasUserCorrected = false,
+            savedToEarnings = true,
+            latitude = state.telemetry.latitude ?: state.activePin?.latitude,
+            longitude = state.telemetry.longitude ?: state.activePin?.longitude,
+            createdAtMillis = now
+        )
+        _uiState.update { s ->
+            s.copy(analyzedOrders = listOf(orderRecord) + s.analyzedOrders)
+        }
+        viewModelScope.launch { repository?.upsertAnalyzedOrder(orderRecord) }
+
+        val title = "[${offer.platform.displayNameTh}] ${offer.pickupName}"
+        addEarningsTransaction(
+            type = EarningsRecordType.INCOME,
+            dateKey = todayKey,
+            title = title,
+            category = offer.platform.displayNameTh,
+            amountBaht = offer.payoutBaht,
+            distanceKm = offer.tripDistanceKm + offer.deadMileageKm,
+            durationMinutes = offer.estimatedMinutes ?: 0,
+            timestampMillis = now
+        )
+
+        state.activeWorkSession?.let { active ->
+            val updatedSession = active.copy(
+                completedOrders = active.completedOrders + 1,
+                grossIncomeBaht = active.grossIncomeBaht + offer.payoutBaht
+            )
+            _uiState.update { s ->
+                s.copy(workSessions = s.workSessions.map { if (it.id == active.id) updatedSession else it })
+            }
+            viewModelScope.launch { repository?.upsertWorkSession(updatedSession) }
+        }
+        return true
+    }
+
+    fun dismissJobOffer(offerId: String) {
+        val offer = _uiState.value.detectedJobOffers.firstOrNull { it.id == offerId } ?: return
+        val updated = offer.copy(status = JobOfferStatus.DISMISSED)
+        _uiState.update { s ->
+            s.copy(
+                detectedJobOffers = s.detectedJobOffers.map { if (it.id == offerId) updated else it },
+                statusBannerMessageTh = "ข้ามรายการงานจาก ${offer.platform.displayNameTh} แล้ว"
+            )
+        }
+        viewModelScope.launch { repository?.upsertJobOffer(updated) }
+    }
+
+    fun clearExpiredJobOffers() {
+        val expired = _uiState.value.detectedJobOffers.filter { it.status == JobOfferStatus.EXPIRED }
+        if (expired.isEmpty()) return
+        _uiState.update { s ->
+            s.copy(
+                detectedJobOffers = s.detectedJobOffers.filterNot { it.status == JobOfferStatus.EXPIRED },
+                statusBannerMessageTh = "ล้างรายการงานที่หมดเวลา ${expired.size} รายการแล้ว"
+            )
+        }
+        viewModelScope.launch {
+            expired.forEach { repository?.deleteJobOffer(it.id) }
+        }
+    }
+
+    fun clearAllJobOffers() {
+        _uiState.update {
+            it.copy(
+                detectedJobOffers = emptyList(),
+                statusBannerMessageTh = "ล้างรายการเรดาร์งานทั้งหมดแล้ว"
+            )
+        }
+        viewModelScope.launch { repository?.clearJobOffers() }
+    }
+
+    fun loadOfferIntoAiAnalyzer(offer: DetectedJobOffer) {
+        val draft = ParsedOrderDraft(
+            source = when (offer.source) {
+                JobOfferSource.OCR_SCREEN_READER -> OrderInputSource.SCREENSHOT_IMPORT
+                else -> OrderInputSource.MANUAL_OR_TEXT
+            },
+            rawOcrText = offer.rawSummary,
+            payoutBaht = offer.payoutBaht,
+            payoutConfidence = offer.confidenceScore,
+            distanceKm = offer.tripDistanceKm.takeIf { it > 0.0 },
+            distanceConfidence = if (offer.tripDistanceKm > 0.0) offer.confidenceScore else 0f,
+            estimatedMinutes = offer.estimatedMinutes,
+            durationConfidence = if (offer.estimatedMinutes != null) offer.confidenceScore else 0f,
+            deadMileageKm = offer.effectiveDistanceToPickupKm(),
+            pickupName = offer.pickupName,
+            dropoffName = offer.dropoffName,
+            platformHint = offer.platform.displayNameTh,
+            overallConfidence = offer.confidenceScore,
+            wasUserCorrected = false
+        )
+        val state = _uiState.value
+        val analysis = RiderIntelligenceEngine.analyzeOrder(draft, state.riderProfile, state.fuelState)
+        _uiState.update {
+            it.copy(
+                currentOrderDraft = draft,
+                currentOrderAnalysis = analysis,
+                currentScreen = AppScreen.AI_ASSISTANT,
+                secondaryScreen = null,
+                ocrErrorMessageTh = if (draft.distanceKm == null) {
+                    "แจ้งเตือนไม่ได้ระบุระยะทางส่ง — กรุณากรอกระยะทาง (กม.) เพื่อคำนวณ Smart Score แม่นยำ"
+                } else null
+            )
+        }
+    }
+
+    fun toggleCloudSyncOptIn(enabled: Boolean) {
+        _uiState.update {
+            it.copy(cloudSyncState = it.cloudSyncState.copy(cloudSyncOptIn = enabled))
+        }
+        viewModelScope.launch {
+            val s = _uiState.value.cloudSyncState
+            repository?.preferencesStore?.updateCloudSyncPreferences(
+                cloudSyncOptIn = enabled,
+                membershipProEnabled = s.isMembershipProEnabled
+            )
+            refreshCloudSyncReadiness()
+        }
+    }
+
+    fun toggleMembershipProReady(enabled: Boolean) {
+        _uiState.update {
+            it.copy(cloudSyncState = it.cloudSyncState.copy(isMembershipProEnabled = enabled))
+        }
+        viewModelScope.launch {
+            val s = _uiState.value.cloudSyncState
+            repository?.preferencesStore?.updateCloudSyncPreferences(
+                cloudSyncOptIn = s.cloudSyncOptIn,
+                membershipProEnabled = enabled
+            )
+            refreshCloudSyncReadiness()
+        }
+    }
+
+    fun refreshCloudSyncReadiness() {
+        val repo = repository ?: return
+        viewModelScope.launch {
+            val readyState = runCatching { repo.cloudSyncManager.evaluateReadiness() }.getOrNull() ?: return@launch
+            _uiState.update { it.copy(cloudSyncState = readyState) }
+        }
+    }
+
+    fun triggerCloudSyncAttempt() {
+        val repo = repository ?: return
+        viewModelScope.launch {
+            val res = repo.cloudSyncManager.requestCloudSync()
+            refreshCloudSyncReadiness()
+            val msg = res.exceptionOrNull()?.localizedMessage
+                ?: "ซิงก์ข้อมูลคลาวด์สำเร็จ"
+            _uiState.update {
+                it.copy(
+                    cloudSyncState = it.cloudSyncState.copy(lastCloudSyncAttemptMillis = System.currentTimeMillis()),
+                    statusBannerMessageTh = msg
+                )
+            }
+        }
+    }
+
     fun clearStatusBanner() {
         _uiState.update { it.copy(statusBannerMessageTh = null) }
     }
@@ -1984,6 +2487,7 @@ class FixPointViewModel : ViewModel() {
         super.onCleared()
         stopViewModelRepeatAlertLoop()
         sessionTickerJob?.cancel()
+        radarTickerJob?.cancel()
         try {
             locationService?.stopLocationUpdates()
         } catch (_: Throwable) {}

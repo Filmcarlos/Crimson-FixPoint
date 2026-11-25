@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.automirrored.filled.ScreenShare
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.WarningAmber
@@ -61,9 +63,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.ai.RiderIntelligenceEngine
 import com.example.model.AnalyzedOrderRecord
-import com.example.model.AppScreen
+import com.example.model.DailyBreakEvenState
+import com.example.model.EarningsPeriod
 import com.example.model.OrderGrade
 import com.example.model.ScreenReaderState
+import com.example.model.SmartEarningsCalculator
 import com.example.ui.components.CrimsonHeroCard
 import com.example.ui.components.PremiumCard
 import com.example.ui.components.PremiumPrimaryButton
@@ -154,6 +158,47 @@ fun AiAssistantScreen(
         )
     }
 
+    val todayKey = remember { DailyBreakEvenState.todayDateKey() }
+    val todaySummary = remember(
+        uiState.smartEarningsState.transactions,
+        uiState.smartEarningsState.dailyWorkMetrics,
+        uiState.smartEarningsState.goals,
+        uiState.fuelState.distanceDrivenSinceRefuelKm
+    ) {
+        SmartEarningsCalculator.computeSummary(
+            state = uiState.smartEarningsState.copy(
+                selectedPeriod = EarningsPeriod.DAILY,
+                selectedDateKey = todayKey
+            ),
+            todayKey = todayKey,
+            todayLiveFuelDistanceKm = uiState.fuelState.distanceDrivenSinceRefuelKm
+        )
+    }
+    val shiftSummary = remember(todaySummary, uiState.activeWorkSession, uiState.sessionClockTickMillis) {
+        RiderIntelligenceEngine.summarizeShiftAndDailyPerformance(
+            todaySummary = todaySummary,
+            activeSession = uiState.activeWorkSession,
+            nowMillis = uiState.sessionClockTickMillis
+        )
+    }
+    val radarComparison = remember(
+        uiState.detectedJobOffers,
+        uiState.riderProfile,
+        uiState.radarClockTickMillis
+    ) {
+        RiderIntelligenceEngine.analyzeRadarComparison(
+            offers = uiState.detectedJobOffers,
+            profile = uiState.riderProfile,
+            nowMillis = uiState.radarClockTickMillis
+        )
+    }
+    val peakHours = remember(uiState.smartEarningsState.transactions, uiState.analyzedOrders) {
+        RiderIntelligenceEngine.analyzePeakHoursFromHistory(
+            transactions = uiState.smartEarningsState.transactions,
+            analyzedOrders = uiState.analyzedOrders
+        )
+    }
+
     // Explicit Screen Reader Consent Modal (MediaProjection Safety Policy)
     if (uiState.showScreenReaderConsentDialog) {
         AlertDialog(
@@ -216,6 +261,104 @@ fun AiAssistantScreen(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 104.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+            // 0A. Phase 5 AI Rider Copilot: Daily Shift & Profit Breakdown (Verified Local Data)
+            item {
+                PremiumCard(
+                    accentBorder = CrimsonBorderGlow,
+                    modifier = Modifier.testTag("ai_copilot_shift_summary")
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "AI Rider Copilot — สรุปผลงานวันนี้",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = TextHudPrimary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = shiftSummary.summaryMessageTh,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextHudSecondary
+                            )
+                        }
+                        StatusPillBadge(text = "ข้อมูลจริงในเครื่อง", accentColor = EmeraldSRank)
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(SurfaceLevel2)
+                            .padding(10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        MiniKpiCol("รับแล้ว", "฿${shiftSummary.grossIncomeBaht.toInt()}", CyanTelemetry)
+                        MiniKpiCol("ต้นทุน/จ่าย", "฿${shiftSummary.fuelAndExpenseBaht.toInt()}", AmberWarning)
+                        MiniKpiCol(
+                            "กำไรสุทธิ",
+                            String.format(Locale.US, "฿%.0f", shiftSummary.netProfitBaht),
+                            if (shiftSummary.netProfitBaht >= 0.0) EmeraldSRank else CrimsonNeon
+                        )
+                        MiniKpiCol(
+                            "฿/กม.",
+                            if (shiftSummary.avgBahtPerKm > 0.0) String.format(Locale.US, "฿%.1f", shiftSummary.avgBahtPerKm) else "—",
+                            VioletInsight
+                        )
+                    }
+                }
+            }
+
+            // 0B. Phase 5 Radar Comparison (when active radar offers exist)
+            if (radarComparison != null) {
+                item {
+                    PremiumCard(
+                        accentBorder = CyanTelemetry.copy(alpha = 0.6f),
+                        modifier = Modifier.testTag("ai_copilot_radar_comparison")
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Sensors, contentDescription = null, tint = CyanTelemetry)
+                                Text(
+                                    text = "เปรียบเทียบงานจาก Job Radar",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = TextHudPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            StatusPillBadge(text = "LIVE RADAR", accentColor = CyanTelemetry)
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "คุ้มสุด: ${radarComparison.bestSmartHeadlineTh}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = EmeraldSRank
+                        )
+                        Text(
+                            text = "ใกล้สุด: ${radarComparison.nearestHeadlineTh}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextHudPrimary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = radarComparison.adviceTh,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextHudSecondary
+                        )
+                    }
+                }
+            }
+
             // 1. User-Controlled Screen Reader & Screenshot Import Card
             item {
                 val srState = uiState.screenReaderState
@@ -773,6 +916,78 @@ fun AiAssistantScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = TextHudSecondary
                                 )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 5B. Peak Earning Hours from Verified Local History
+            item {
+                SectionHeaderRow(
+                    title = "ช่วงเวลาทำเงินสูงสุด (Peak Hours)",
+                    subtitle = "สรุปจากเวลาจริงในบัญชีรายได้และประวัติออเดอร์ของคุณ (ไม่เดาสุ่ม)"
+                )
+            }
+            if (peakHours.isEmpty()) {
+                item {
+                    PremiumCard(modifier = Modifier.testTag("ai_copilot_peak_hours")) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(Icons.Default.Schedule, contentDescription = null, tint = TextHudMuted)
+                            Text(
+                                text = "ยังไม่มีประวัติงานพอวิเคราะห์ช่วงเวลาพีค — เมื่อบันทึกรายได้หรือวิเคราะห์ออเดอร์ ระบบจะแสดงช่วงเวลาที่ทำเงินดีที่สุดจากข้อมูลจริงของคุณ",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextHudMuted
+                            )
+                        }
+                    }
+                }
+            } else {
+                item {
+                    PremiumCard(modifier = Modifier.testTag("ai_copilot_peak_hours")) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            peakHours.forEach { slot ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(SurfaceLevel2)
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Schedule,
+                                            contentDescription = null,
+                                            tint = AmberWarning,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = slot.timeWindowLabel,
+                                            style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMonoFamily),
+                                            color = TextHudPrimary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Text(
+                                        text = String.format(
+                                            Locale.US,
+                                            "%d งาน • รวม ฿%.0f (เฉลี่ย ฿%.0f)",
+                                            slot.orderCount,
+                                            slot.totalIncomeBaht,
+                                            slot.avgPayoutBaht
+                                        ),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = EmeraldSRank
+                                    )
+                                }
                             }
                         }
                     }

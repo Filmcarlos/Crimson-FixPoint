@@ -4,6 +4,7 @@ import android.content.Context
 import com.example.data.local.AnalyzedOrderEntity
 import com.example.data.local.DailyMetricsEntity
 import com.example.data.local.FixPointDatabase
+import com.example.data.local.JobOfferEntity
 import com.example.data.local.RiderPreferencesDataStore
 import com.example.data.local.SavedPinEntity
 import com.example.data.local.StoredRiderPreferences
@@ -15,11 +16,15 @@ import com.example.model.CustomExpenseItem
 import com.example.model.DailyBreakEvenState
 import com.example.model.DailyFinancialHistoryItem
 import com.example.model.DailyWorkMetrics
+import com.example.model.DeliveryPlatform
+import com.example.model.DetectedJobOffer
 import com.example.model.EarningsGoals
 import com.example.model.EarningsRecordType
 import com.example.model.EarningsTransaction
 import com.example.model.FuelEstimateState
 import com.example.model.JobIncomeEntry
+import com.example.model.JobOfferSource
+import com.example.model.JobOfferStatus
 import com.example.model.MeasurementUnit
 import com.example.model.OrderGrade
 import com.example.model.OrderInputSource
@@ -48,6 +53,9 @@ class FixPointRepository(
     private val metricsDao = database.dailyMetricsDao()
     private val sessionDao = database.workSessionDao()
     private val orderDao = database.analyzedOrderDao()
+    private val jobOfferDao = database.jobOfferDao()
+
+    val cloudSyncManager: CloudSyncGateway = OfflineCloudSyncPrepManager(database, preferencesStore)
 
     val savedPinsFlow: Flow<List<SavedLocationItem>> =
         pinDao.observeAllPins().map { list -> list.map { it.toDomain() } }
@@ -63,6 +71,9 @@ class FixPointRepository(
 
     val analyzedOrdersFlow: Flow<List<AnalyzedOrderRecord>> =
         orderDao.observeAllOrders().map { list -> list.map { it.toDomain() } }
+
+    val jobOffersFlow: Flow<List<DetectedJobOffer>> =
+        jobOfferDao.observeAllOffers().map { list -> list.map { it.toDomain() } }
 
     val preferencesFlow: Flow<StoredRiderPreferences> = preferencesStore.preferencesFlow
 
@@ -255,6 +266,13 @@ class FixPointRepository(
     suspend fun deleteAnalyzedOrder(id: String) = orderDao.deleteById(id)
     suspend fun clearAnalyzedOrders() = orderDao.clearAll()
 
+    suspend fun upsertJobOffer(offer: DetectedJobOffer) =
+        jobOfferDao.upsertOffer(JobOfferEntity.fromDomain(offer))
+    suspend fun upsertJobOffers(offers: List<DetectedJobOffer>) =
+        jobOfferDao.upsertOffers(offers.map { JobOfferEntity.fromDomain(it) })
+    suspend fun deleteJobOffer(id: String) = jobOfferDao.deleteById(id)
+    suspend fun clearJobOffers() = jobOfferDao.clearAll()
+
     /**
      * Exports all Room records + DataStore preferences into a portable offline JSON document.
      */
@@ -265,11 +283,15 @@ class FixPointRepository(
         val metrics = metricsDao.getAllMetricsSnapshot()
         val sessions = sessionDao.getAllSessionsSnapshot()
         val orders = orderDao.getAllOrdersSnapshot()
+        val jobOffers = jobOfferDao.getAllOffersSnapshot()
+
+        val now = System.currentTimeMillis()
+        preferencesStore.recordLastLocalBackup(now)
 
         val root = JSONObject().apply {
-            put("schemaVersion", 2)
+            put("schemaVersion", 3)
             put("appVersion", "2.0.0")
-            put("exportedAtMillis", System.currentTimeMillis())
+            put("exportedAtMillis", now)
 
             put("profile", JSONObject().apply {
                 put("riderName", prefs.profile.riderName)
@@ -388,6 +410,37 @@ class FixPointRepository(
                         put("latitude", o.latitude ?: JSONObject.NULL)
                         put("longitude", o.longitude ?: JSONObject.NULL)
                         put("createdAtMillis", o.createdAtMillis)
+                    })
+                }
+            })
+
+            put("jobOffers", JSONArray().apply {
+                jobOffers.forEach { j ->
+                    put(JSONObject().apply {
+                        put("id", j.id)
+                        put("signatureHash", j.signatureHash)
+                        put("platform", j.platform)
+                        put("source", j.source)
+                        put("pickupName", j.pickupName)
+                        put("dropoffName", j.dropoffName)
+                        put("payoutBaht", j.payoutBaht)
+                        put("tripDistanceKm", j.tripDistanceKm)
+                        put("deadMileageKm", j.deadMileageKm)
+                        put("estimatedMinutes", j.estimatedMinutes ?: JSONObject.NULL)
+                        put("pickupLat", j.pickupLat ?: JSONObject.NULL)
+                        put("pickupLng", j.pickupLng ?: JSONObject.NULL)
+                        put("distanceFromRiderKm", j.distanceFromRiderKm ?: JSONObject.NULL)
+                        put("netProfitBaht", j.netProfitBaht)
+                        put("earningsPerKm", j.earningsPerKm)
+                        put("earningsPerHour", j.earningsPerHour ?: JSONObject.NULL)
+                        put("smartScore", j.smartScore)
+                        put("grade", j.grade)
+                        put("confidenceScore", j.confidenceScore.toDouble())
+                        put("createdAtMillis", j.createdAtMillis)
+                        put("expiresAtMillis", j.expiresAtMillis)
+                        put("status", j.status)
+                        put("isDuplicateMerged", j.isDuplicateMerged)
+                        put("rawSummary", j.rawSummary)
                     })
                 }
             })
@@ -525,6 +578,44 @@ class FixPointRepository(
             if (orders.isNotEmpty()) {
                 orderDao.upsertOrders(orders)
                 restoredCount += orders.size
+            }
+
+            val jobOffersArray = root.optJSONArray("jobOffers") ?: JSONArray()
+            val jobOffers = mutableListOf<JobOfferEntity>()
+            for (i in 0 until jobOffersArray.length()) {
+                val obj = jobOffersArray.optJSONObject(i) ?: continue
+                jobOffers.add(
+                    JobOfferEntity(
+                        id = obj.optString("id").ifBlank { "JOB-IMP-$i" },
+                        signatureHash = obj.optString("signatureHash", "IMP-$i"),
+                        platform = obj.optString("platform", DeliveryPlatform.OTHER.name),
+                        source = obj.optString("source", JobOfferSource.MANUAL_OR_SHARED.name),
+                        pickupName = obj.optString("pickupName", ""),
+                        dropoffName = obj.optString("dropoffName", ""),
+                        payoutBaht = obj.optDouble("payoutBaht", 0.0),
+                        tripDistanceKm = obj.optDouble("tripDistanceKm", 0.0),
+                        deadMileageKm = obj.optDouble("deadMileageKm", 0.0),
+                        estimatedMinutes = if (obj.isNull("estimatedMinutes")) null else obj.optInt("estimatedMinutes"),
+                        pickupLat = if (obj.isNull("pickupLat")) null else obj.optDouble("pickupLat"),
+                        pickupLng = if (obj.isNull("pickupLng")) null else obj.optDouble("pickupLng"),
+                        distanceFromRiderKm = if (obj.isNull("distanceFromRiderKm")) null else obj.optDouble("distanceFromRiderKm"),
+                        netProfitBaht = obj.optDouble("netProfitBaht", 0.0),
+                        earningsPerKm = obj.optDouble("earningsPerKm", 0.0),
+                        earningsPerHour = if (obj.isNull("earningsPerHour")) null else obj.optDouble("earningsPerHour"),
+                        smartScore = obj.optInt("smartScore", 0),
+                        grade = obj.optString("grade", OrderGrade.B.name),
+                        confidenceScore = obj.optDouble("confidenceScore", 0.0).toFloat(),
+                        createdAtMillis = obj.optLong("createdAtMillis", System.currentTimeMillis()),
+                        expiresAtMillis = obj.optLong("expiresAtMillis", System.currentTimeMillis()),
+                        status = obj.optString("status", JobOfferStatus.EXPIRED.name),
+                        isDuplicateMerged = obj.optBoolean("isDuplicateMerged", false),
+                        rawSummary = obj.optString("rawSummary", "")
+                    )
+                )
+            }
+            if (jobOffers.isNotEmpty()) {
+                jobOfferDao.upsertOffers(jobOffers)
+                restoredCount += jobOffers.size
             }
 
             val cur = preferencesStore.getSnapshot()

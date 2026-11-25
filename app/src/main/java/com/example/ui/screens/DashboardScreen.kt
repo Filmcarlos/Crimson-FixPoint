@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
@@ -60,6 +61,7 @@ import com.example.model.EarningsPeriod
 import com.example.model.GeoMath
 import com.example.model.GpsLockState
 import com.example.model.RecommendationPriority
+import com.example.model.SecondaryScreen
 import com.example.model.SmartEarningsCalculator
 import com.example.model.ZoneMonitorStatus
 import com.example.ui.components.CrimsonHeroCard
@@ -94,6 +96,7 @@ fun DashboardScreen(
     onMuteZoneAlert: () -> Unit,
     onRequestLocationPermission: () -> Unit,
     onNavigateToScreen: (AppScreen) -> Unit,
+    onNavigateToSecondaryScreen: (SecondaryScreen) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val todayKey = remember { DailyBreakEvenState.todayDateKey() }
@@ -137,6 +140,7 @@ fun DashboardScreen(
     val totalTodayMinutes = (todaySummary.totalWorkHours * 60.0).toInt() +
         if (activeSession != null) activeSessionMinutes else 0
 
+    val activeRadarCount = uiState.rankedActiveJobOffers.size
     val recommendations = remember(
         todaySummary,
         fuelIntel,
@@ -144,7 +148,8 @@ fun DashboardScreen(
         uiState.excessDistanceMeters,
         hotspots,
         uiState.analyzedOrders,
-        activeSession != null
+        activeSession != null,
+        activeRadarCount
     ) {
         RiderIntelligenceEngine.generateDashboardRecommendations(
             todaySummary = todaySummary,
@@ -153,7 +158,8 @@ fun DashboardScreen(
             excessDistanceMeters = uiState.excessDistanceMeters,
             hotspots = hotspots,
             analyzedOrders = uiState.analyzedOrders,
-            isSessionActive = activeSession != null
+            isSessionActive = activeSession != null,
+            activeRadarJobsCount = activeRadarCount
         )
     }
 
@@ -550,36 +556,51 @@ fun DashboardScreen(
                 }
             }
 
-            // 5. Quick Actions
+            // 5. Quick Actions (2x2 Command Grid)
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    QuickActionTile(
-                        title = "วิเคราะห์ออเดอร์",
-                        subtitle = "AI OCR",
-                        icon = Icons.Default.AutoAwesome,
-                        accent = CrimsonNeon,
-                        onClick = { onNavigateToScreen(AppScreen.AI_ASSISTANT) },
-                        modifier = Modifier.weight(1f).testTag("quick_action_ai")
-                    )
-                    QuickActionTile(
-                        title = "แผนที่โซน",
-                        subtitle = "${uiState.savedLocations.size} หมุด",
-                        icon = Icons.Default.Map,
-                        accent = CyanTelemetry,
-                        onClick = { onNavigateToScreen(AppScreen.SMART_MAP) },
-                        modifier = Modifier.weight(1f).testTag("quick_action_map")
-                    )
-                    QuickActionTile(
-                        title = "บัญชีรายได้",
-                        subtitle = "กราฟ & เป้า",
-                        icon = Icons.Default.AccountBalanceWallet,
-                        accent = EmeraldSRank,
-                        onClick = { onNavigateToScreen(AppScreen.EARNINGS) },
-                        modifier = Modifier.weight(1f).testTag("quick_action_earnings")
-                    )
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        QuickActionTile(
+                            title = "เรดาร์งาน",
+                            subtitle = if (activeRadarCount > 0) "$activeRadarCount งานเปิดรับ" else "LINE MAN / Grab / SPF",
+                            icon = Icons.Default.Sensors,
+                            accent = CrimsonNeon,
+                            onClick = { onNavigateToScreen(AppScreen.JOB_RADAR) },
+                            modifier = Modifier.weight(1f).testTag("quick_action_radar")
+                        )
+                        QuickActionTile(
+                            title = "แผนที่โซน",
+                            subtitle = "${uiState.savedLocations.size} หมุด",
+                            icon = Icons.Default.Map,
+                            accent = CyanTelemetry,
+                            onClick = { onNavigateToScreen(AppScreen.LIVE_MAP) },
+                            modifier = Modifier.weight(1f).testTag("quick_action_map")
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        QuickActionTile(
+                            title = "AI ผู้ช่วย",
+                            subtitle = "OCR & Copilot",
+                            icon = Icons.Default.AutoAwesome,
+                            accent = VioletInsight,
+                            onClick = { onNavigateToScreen(AppScreen.AI_ASSISTANT) },
+                            modifier = Modifier.weight(1f).testTag("quick_action_ai")
+                        )
+                        QuickActionTile(
+                            title = "บัญชีรายได้",
+                            subtitle = "กราฟ & เป้ารายวัน",
+                            icon = Icons.Default.AccountBalanceWallet,
+                            accent = EmeraldSRank,
+                            onClick = { onNavigateToScreen(AppScreen.EARNINGS) },
+                            modifier = Modifier.weight(1f).testTag("quick_action_earnings")
+                        )
+                    }
                 }
             }
 
@@ -594,7 +615,14 @@ fun DashboardScreen(
                 val rec = recommendations[idx]
                 RecommendationCardRow(
                     card = rec,
-                    onClick = { onNavigateToScreen(rec.targetScreen) }
+                    onClick = {
+                        val sec = rec.targetSecondaryScreen
+                        if (sec != null) {
+                            onNavigateToSecondaryScreen(sec)
+                        } else {
+                            onNavigateToScreen(rec.targetScreen)
+                        }
+                    }
                 )
             }
         }

@@ -40,20 +40,28 @@ jobs:
           app/src/main/java/com/example/data/local/FixPointDatabase.kt
           app/src/main/java/com/example/data/local/FixPointEntities.kt
           app/src/main/java/com/example/data/local/RiderPreferencesDataStore.kt
+          app/src/main/java/com/example/data/repository/CloudSyncPrepRepository.kt
           app/src/main/java/com/example/data/repository/FixPointRepository.kt
+          app/src/main/java/com/example/integration/DeliveryPlatformAdapters.kt
+          app/src/main/java/com/example/integration/JobRadarEngine.kt
+          app/src/main/java/com/example/model/JobRadarModels.kt
           app/src/main/java/com/example/model/RiderAiModels.kt
           app/src/main/java/com/example/model/SmartEarningsModels.kt
           app/src/main/java/com/example/model/TacticalModels.kt
           app/src/main/java/com/example/model/WorkCostModels.kt
           app/src/main/java/com/example/service/GpsKeepAliveService.kt
           app/src/main/java/com/example/service/LocationService.kt
+          app/src/main/java/com/example/service/RiderNotificationListenerService.kt
           app/src/main/java/com/example/service/ScreenReaderCaptureService.kt
+          app/src/main/java/com/example/ui/components/HudStateComponents.kt
           app/src/main/java/com/example/ui/components/InteractiveZoneMapCanvas.kt
           app/src/main/java/com/example/ui/components/PremiumDesignSystem.kt
           app/src/main/java/com/example/ui/screens/AiAssistantScreen.kt
           app/src/main/java/com/example/ui/screens/DashboardScreen.kt
           app/src/main/java/com/example/ui/screens/EarningsAnalyticsScreen.kt
+          app/src/main/java/com/example/ui/screens/JobRadarScreen.kt
           app/src/main/java/com/example/ui/screens/ProfileSettingsScreen.kt
+          app/src/main/java/com/example/ui/screens/SecondaryScreens.kt
           app/src/main/java/com/example/ui/screens/SmartMapScreen.kt
           app/src/main/java/com/example/ui/theme/Color.kt
           app/src/main/java/com/example/ui/theme/Theme.kt
@@ -65,6 +73,7 @@ jobs:
           app/src/test/java/com/example/ExampleRobolectricTest.kt
           app/src/test/java/com/example/ExampleUnitTest.kt
           app/src/test/java/com/example/FixPointDatabaseMigrationTest.kt
+          app/src/test/java/com/example/JobRadarAndAdaptersTest.kt
           app/src/test/java/com/example/RiderAiAndOcrUnitTest.kt
           app/src/test/java/com/example/SmartEarningsAndRouteTest.kt
           EOF

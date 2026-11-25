@@ -100,6 +100,7 @@ fun ProfileSettingsScreen(
     onRequestForegroundPermissions: () -> Unit,
     onRequestBackgroundPermission: () -> Unit,
     onRequestBatteryExemption: () -> Unit,
+    onRequestNotificationListenerAccess: () -> Unit = {},
     onOpenSystemSettings: () -> Unit,
     onExportLocalBackup: () -> Unit,
     onImportLocalBackup: () -> Unit,
@@ -513,6 +514,12 @@ fun ProfileSettingsScreen(
                         granted = uiState.isIgnoringBatteryOptimizations,
                         actionLabel = "อนุญาต",
                         onAction = onRequestBatteryExemption
+                    )
+                    PermissionRowItem(
+                        title = "อ่านแจ้งเตือน Job Radar (Notification Access)",
+                        granted = uiState.notificationAccessGranted,
+                        actionLabel = "เปิดสิทธิ์",
+                        onAction = onRequestNotificationListenerAccess
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     PremiumSecondaryButton(

@@ -13,6 +13,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.example.model.CoordinateFormat
 import com.example.model.EarningsGoals
 import com.example.model.FuelEstimateState
+import com.example.model.JobRankingMode
 import com.example.model.MeasurementUnit
 import com.example.model.PrivacyPreferences
 import com.example.model.RiderProfileConfig
@@ -40,7 +41,14 @@ data class StoredRiderPreferences(
     val updateFrequency: UpdateFrequency = UpdateFrequency.STANDARD,
     val coordinateFormat: CoordinateFormat = CoordinateFormat.DECIMAL,
     val keepScreenOn: Boolean = true,
-    val lockEnabled: Boolean = false
+    val lockEnabled: Boolean = false,
+    val jobRankingMode: JobRankingMode = JobRankingMode.SMART_BEST_JOB,
+    val lineManEnabled: Boolean = true,
+    val grabEnabled: Boolean = true,
+    val shopeeFoodEnabled: Boolean = true,
+    val cloudSyncOptIn: Boolean = false,
+    val membershipProEnabled: Boolean = false,
+    val lastLocalBackupMillis: Long = 0L
 )
 
 class RiderPreferencesDataStore(context: Context) {
@@ -95,7 +103,16 @@ class RiderPreferencesDataStore(context: Context) {
                 ?.let { runCatching { CoordinateFormat.valueOf(it) }.getOrNull() }
                 ?: CoordinateFormat.DECIMAL,
             keepScreenOn = prefs[KEY_KEEP_SCREEN_ON] ?: true,
-            lockEnabled = prefs[KEY_LOCK_ENABLED] ?: false
+            lockEnabled = prefs[KEY_LOCK_ENABLED] ?: false,
+            jobRankingMode = prefs[KEY_JOB_RANKING_MODE]
+                ?.let { runCatching { JobRankingMode.valueOf(it) }.getOrNull() }
+                ?: JobRankingMode.SMART_BEST_JOB,
+            lineManEnabled = prefs[KEY_ADAPTER_LINEMAN] ?: true,
+            grabEnabled = prefs[KEY_ADAPTER_GRAB] ?: true,
+            shopeeFoodEnabled = prefs[KEY_ADAPTER_SHOPEE] ?: true,
+            cloudSyncOptIn = prefs[KEY_CLOUD_SYNC_OPT_IN] ?: false,
+            membershipProEnabled = prefs[KEY_MEMBERSHIP_PRO] ?: false,
+            lastLocalBackupMillis = prefs[KEY_LAST_LOCAL_BACKUP_MILLIS]?.toLongOrNull() ?: 0L
         )
     }
 
@@ -142,6 +159,13 @@ class RiderPreferencesDataStore(context: Context) {
             p[KEY_COORDINATE_FORMAT] = prefs.coordinateFormat.name
             p[KEY_KEEP_SCREEN_ON] = prefs.keepScreenOn
             p[KEY_LOCK_ENABLED] = prefs.lockEnabled
+            p[KEY_JOB_RANKING_MODE] = prefs.jobRankingMode.name
+            p[KEY_ADAPTER_LINEMAN] = prefs.lineManEnabled
+            p[KEY_ADAPTER_GRAB] = prefs.grabEnabled
+            p[KEY_ADAPTER_SHOPEE] = prefs.shopeeFoodEnabled
+            p[KEY_CLOUD_SYNC_OPT_IN] = prefs.cloudSyncOptIn
+            p[KEY_MEMBERSHIP_PRO] = prefs.membershipProEnabled
+            p[KEY_LAST_LOCAL_BACKUP_MILLIS] = prefs.lastLocalBackupMillis.toString()
         }
     }
 
@@ -212,6 +236,36 @@ class RiderPreferencesDataStore(context: Context) {
         }
     }
 
+    suspend fun updateJobRadarPreferences(
+        rankingMode: JobRankingMode,
+        lineManEnabled: Boolean,
+        grabEnabled: Boolean,
+        shopeeFoodEnabled: Boolean
+    ) {
+        dataStore.edit { p ->
+            p[KEY_JOB_RANKING_MODE] = rankingMode.name
+            p[KEY_ADAPTER_LINEMAN] = lineManEnabled
+            p[KEY_ADAPTER_GRAB] = grabEnabled
+            p[KEY_ADAPTER_SHOPEE] = shopeeFoodEnabled
+        }
+    }
+
+    suspend fun updateCloudSyncPreferences(
+        cloudSyncOptIn: Boolean,
+        membershipProEnabled: Boolean
+    ) {
+        dataStore.edit { p ->
+            p[KEY_CLOUD_SYNC_OPT_IN] = cloudSyncOptIn
+            p[KEY_MEMBERSHIP_PRO] = membershipProEnabled
+        }
+    }
+
+    suspend fun recordLastLocalBackup(timestampMillis: Long) {
+        dataStore.edit { p ->
+            p[KEY_LAST_LOCAL_BACKUP_MILLIS] = timestampMillis.toString()
+        }
+    }
+
     companion object {
         private val KEY_LEGACY_MIGRATED = booleanPreferencesKey("legacy_migrated_v2")
         private val KEY_RIDER_NAME = stringPreferencesKey("rider_name")
@@ -248,5 +302,13 @@ class RiderPreferencesDataStore(context: Context) {
         private val KEY_COORDINATE_FORMAT = stringPreferencesKey("coordinate_format")
         private val KEY_KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
         private val KEY_LOCK_ENABLED = booleanPreferencesKey("lock_enabled")
+
+        private val KEY_JOB_RANKING_MODE = stringPreferencesKey("job_ranking_mode")
+        private val KEY_ADAPTER_LINEMAN = booleanPreferencesKey("adapter_lineman_enabled")
+        private val KEY_ADAPTER_GRAB = booleanPreferencesKey("adapter_grab_enabled")
+        private val KEY_ADAPTER_SHOPEE = booleanPreferencesKey("adapter_shopee_enabled")
+        private val KEY_CLOUD_SYNC_OPT_IN = booleanPreferencesKey("cloud_sync_opt_in")
+        private val KEY_MEMBERSHIP_PRO = booleanPreferencesKey("membership_pro_enabled")
+        private val KEY_LAST_LOCAL_BACKUP_MILLIS = stringPreferencesKey("last_local_backup_millis")
     }
 }

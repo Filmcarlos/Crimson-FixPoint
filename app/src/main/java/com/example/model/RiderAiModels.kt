@@ -175,7 +175,42 @@ data class AiRecommendationCard(
     val subtitleTh: String,
     val badgeText: String,
     val priority: RecommendationPriority,
-    val targetScreen: AppScreen
+    val targetScreen: AppScreen,
+    val targetSecondaryScreen: SecondaryScreen? = null
+)
+
+data class PeakHourInsight(
+    val hourStart: Int,
+    val hourEnd: Int,
+    val orderCount: Int,
+    val avgPayoutBaht: Double,
+    val totalIncomeBaht: Double,
+    val isVerifiedLocalData: Boolean = true
+) {
+    val timeWindowLabel: String
+        get() = String.format(Locale.US, "%02d:00–%02d:00 น.", hourStart, hourEnd % 24)
+}
+
+data class RadarComparisonInsight(
+    val bestSmartOfferId: String?,
+    val bestSmartHeadlineTh: String,
+    val nearestOfferId: String?,
+    val nearestHeadlineTh: String,
+    val averageEarningsPerKm: Double,
+    val adviceTh: String,
+    val isLiveEstimate: Boolean = true
+)
+
+data class ShiftPerformanceSummary(
+    val completedJobsToday: Int,
+    val grossIncomeBaht: Double,
+    val fuelAndExpenseBaht: Double,
+    val netProfitBaht: Double,
+    val avgBahtPerKm: Double,
+    val avgBahtPerHour: Double,
+    val activeShiftMinutes: Int,
+    val summaryMessageTh: String,
+    val isVerifiedLocalData: Boolean = true
 )
 
 data class ExpenseCategoryBreakdown(

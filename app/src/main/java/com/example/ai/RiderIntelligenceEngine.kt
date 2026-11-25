@@ -3,6 +3,8 @@ package com.example.ai
 import com.example.model.AiRecommendationCard
 import com.example.model.AnalyzedOrderRecord
 import com.example.model.AppScreen
+import com.example.model.DeliveryPlatform
+import com.example.model.DetectedJobOffer
 import com.example.model.EarningsRecordType
 import com.example.model.EarningsSummaryMetrics
 import com.example.model.EarningsTransaction
@@ -11,14 +13,21 @@ import com.example.model.FuelEstimateState
 import com.example.model.FuelIntelligenceSummary
 import com.example.model.GeoMath
 import com.example.model.HotspotRecommendation
+import com.example.model.JobOfferStatus
 import com.example.model.OrderAnalysisResult
 import com.example.model.OrderGrade
 import com.example.model.ParsedOrderDraft
+import com.example.model.PeakHourInsight
 import com.example.model.PinCategory
+import com.example.model.RadarComparisonInsight
 import com.example.model.RecommendationPriority
 import com.example.model.RiderProfileConfig
 import com.example.model.SavedLocationItem
+import com.example.model.SecondaryScreen
+import com.example.model.ShiftPerformanceSummary
+import com.example.model.WorkSessionRecord
 import com.example.model.ZoneMonitorStatus
+import java.util.Calendar
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -322,9 +331,23 @@ object RiderIntelligenceEngine {
         excessDistanceMeters: Double,
         hotspots: List<HotspotRecommendation>,
         analyzedOrders: List<AnalyzedOrderRecord>,
-        isSessionActive: Boolean
+        isSessionActive: Boolean,
+        activeRadarJobsCount: Int = 0
     ): List<AiRecommendationCard> {
         val list = mutableListOf<AiRecommendationCard>()
+
+        if (activeRadarJobsCount > 0) {
+            list.add(
+                AiRecommendationCard(
+                    id = "rec_radar_active",
+                    titleTh = "พบงานเข้าใหม่ในเรดาร์ $activeRadarJobsCount รายการ",
+                    subtitleTh = "เปิด Job Radar เพื่อเทียบระยะทางและคะแนนความคุ้มค่า S–D ก่อนกดรับในแอปหลัก",
+                    badgeText = "JOB RADAR",
+                    priority = RecommendationPriority.HIGH,
+                    targetScreen = AppScreen.JOB_RADAR
+                )
+            )
+        }
 
         if (zoneStatus == ZoneMonitorStatus.OUTSIDE_ZONE) {
             list.add(
@@ -334,7 +357,7 @@ object RiderIntelligenceEngine {
                     subtitleTh = "เกินรัศมี ${GeoMath.formatShortZoneDistanceTh(excessDistanceMeters)} แนะนำกลับเข้าโซนหลักเพื่อลดระยะวิ่งเปล่า",
                     badgeText = "ZONE ALERT",
                     priority = RecommendationPriority.CRITICAL,
-                    targetScreen = AppScreen.SMART_MAP
+                    targetScreen = AppScreen.LIVE_MAP
                 )
             )
         }
@@ -347,7 +370,8 @@ object RiderIntelligenceEngine {
                     subtitleTh = fuelIntel.adviceTh,
                     badgeText = "FUEL INTEL",
                     priority = RecommendationPriority.CRITICAL,
-                    targetScreen = AppScreen.PROFILE
+                    targetScreen = AppScreen.HOME,
+                    targetSecondaryScreen = SecondaryScreen.PROFILE
                 )
             )
         }
@@ -360,7 +384,7 @@ object RiderIntelligenceEngine {
                     subtitleTh = "กดเริ่มรอบงานเพื่อติดตามระยะทาง GPS เวลาทำงาน และวิเคราะห์ความคุ้มค่าออเดอร์อัตโนมัติ",
                     badgeText = "SHIFT READY",
                     priority = RecommendationPriority.HIGH,
-                    targetScreen = AppScreen.DASHBOARD
+                    targetScreen = AppScreen.HOME
                 )
             )
         } else if (todaySummary.goalBaht > 0.0 && !todaySummary.isGoalReached) {
@@ -416,7 +440,7 @@ object RiderIntelligenceEngine {
                     subtitleTh = "งานล่าสุดมีระยะวิ่งไปรับร้านค่อนข้างไกล แนะนำจอดรอใกล้โซนฮอตสปอตที่บันทึกไว้",
                     badgeText = "DEAD MILEAGE",
                     priority = RecommendationPriority.HIGH,
-                    targetScreen = AppScreen.SMART_MAP
+                    targetScreen = AppScreen.LIVE_MAP
                 )
             )
         }
@@ -430,7 +454,7 @@ object RiderIntelligenceEngine {
                     subtitleTh = "${topHotspot.reasonTh} (ข้อมูลประวัติในเครื่อง)",
                     badgeText = "HISTORICAL",
                     priority = RecommendationPriority.INFO,
-                    targetScreen = AppScreen.SMART_MAP
+                    targetScreen = AppScreen.LIVE_MAP
                 )
             )
         }
@@ -449,5 +473,184 @@ object RiderIntelligenceEngine {
         }
 
         return list.take(4)
+    }
+
+    /**
+     * Compares currently active detected radar jobs to recommend both the Best Smart Score job
+     * and the Nearest Pickup job with transparent ฿/km and profit rationale.
+     */
+    fun analyzeRadarComparison(
+        offers: List<DetectedJobOffer>,
+        profile: RiderProfileConfig,
+        nowMillis: Long = System.currentTimeMillis()
+    ): RadarComparisonInsight? {
+        val active = offers.filter {
+            it.status == JobOfferStatus.ACTIVE && nowMillis < it.expiresAtMillis
+        }
+        if (active.isEmpty()) return null
+
+        val bestSmart = active.maxWithOrNull(
+            compareBy<DetectedJobOffer> { it.smartScore }
+                .thenBy { it.netProfitBaht }
+        )
+        val nearest = active.minWithOrNull(
+            compareBy<DetectedJobOffer> {
+                it.effectiveDistanceToPickupKm() ?: (it.tripDistanceKm.takeIf { d -> d > 0.0 } ?: Double.MAX_VALUE)
+            }.thenByDescending { it.smartScore }
+        )
+
+        val validRateList = active.mapNotNull { it.earningsPerKm.takeIf { r -> r > 0.0 } }
+        val avgRate = if (validRateList.isNotEmpty()) validRateList.average() else 0.0
+
+        val bestHeadline = bestSmart?.let {
+            String.format(
+                Locale.US,
+                "[%s] %s • เกรด %s (%d คะแนน) • กำไร ~฿%.0f",
+                it.platform.displayNameTh,
+                it.pickupName,
+                it.grade.label,
+                it.smartScore,
+                it.netProfitBaht
+            )
+        } ?: "—"
+
+        val nearestDist = nearest?.effectiveDistanceToPickupKm()
+        val nearestHeadline = nearest?.let {
+            val distText = if (nearestDist != null) {
+                String.format(Locale.US, "ห่าง %.1f กม.", nearestDist)
+            } else if (it.tripDistanceKm > 0.0) {
+                String.format(Locale.US, "ระยะงาน %.1f กม.", it.tripDistanceKm)
+            } else {
+                "ไม่ระบุระยะ"
+            }
+            "[${it.platform.displayNameTh}] ${it.pickupName} • $distText • ฿${it.payoutBaht.roundToInt()}"
+        } ?: "—"
+
+        val advice = when {
+            bestSmart != null && bestSmart.earningsPerKm >= profile.minAcceptableBahtPerKm ->
+                String.format(
+                    Locale.US,
+                    "แนะนำงาน %s (%s) เพราะทำได้ ฿%.1f/กม. สูงกว่าเกณฑ์ขั้นต่ำ ฿%.1f/กม.",
+                    bestSmart.platform.displayNameTh,
+                    bestSmart.pickupName,
+                    bestSmart.earningsPerKm,
+                    profile.minAcceptableBahtPerKm
+                )
+            bestSmart != null ->
+                "งานที่มีอยู่ในเรดาร์ยังต่ำกว่าเกณฑ์ขั้นต่ำ หรือข้อมูลระยะทางยังไม่ครบ — ตรวจสอบตัวเลขก่อนตัดสินใจ"
+            else -> "กำลังติดตามงานจากแจ้งเตือนและ OCR"
+        }
+
+        return RadarComparisonInsight(
+            bestSmartOfferId = bestSmart?.id,
+            bestSmartHeadlineTh = bestHeadline,
+            nearestOfferId = nearest?.id,
+            nearestHeadlineTh = nearestHeadline,
+            averageEarningsPerKm = avgRate,
+            adviceTh = advice,
+            isLiveEstimate = true
+        )
+    }
+
+    /**
+     * Aggregates real local income & analyzed order timestamps into 2-hour windows to identify
+     * verified peak earning hours from the rider's actual device history.
+     * Returns empty list when no records exist (never fabricates fake hours).
+     */
+    fun analyzePeakHoursFromHistory(
+        transactions: List<EarningsTransaction>,
+        analyzedOrders: List<AnalyzedOrderRecord>
+    ): List<PeakHourInsight> {
+        data class TimedPayout(val timestamp: Long, val amount: Double)
+
+        val entries = mutableListOf<TimedPayout>()
+        transactions
+            .filter { it.type == EarningsRecordType.INCOME && it.amountBaht > 0.0 && it.timestampMillis > 0L }
+            .forEach { entries.add(TimedPayout(it.timestampMillis, it.amountBaht)) }
+
+        // Avoid double-counting orders already logged to earnings
+        analyzedOrders
+            .filter { !it.savedToEarnings && it.payoutBaht > 0.0 && it.createdAtMillis > 0L }
+            .forEach { entries.add(TimedPayout(it.createdAtMillis, it.payoutBaht)) }
+
+        if (entries.isEmpty()) return emptyList()
+
+        val cal = Calendar.getInstance(Locale.US)
+        val buckets = linkedMapOf<Int, MutableList<Double>>()
+        for (item in entries) {
+            cal.timeInMillis = item.timestamp
+            val hour = cal.get(Calendar.HOUR_OF_DAY).coerceIn(0, 23)
+            val bucketStart = (hour / 2) * 2
+            buckets.getOrPut(bucketStart) { mutableListOf() }.add(item.amount)
+        }
+
+        return buckets.entries
+            .map { (start, amounts) ->
+                PeakHourInsight(
+                    hourStart = start,
+                    hourEnd = start + 2,
+                    orderCount = amounts.size,
+                    avgPayoutBaht = amounts.average(),
+                    totalIncomeBaht = amounts.sum(),
+                    isVerifiedLocalData = true
+                )
+            }
+            .sortedWith(
+                compareByDescending<PeakHourInsight> { it.totalIncomeBaht }
+                    .thenByDescending { it.orderCount }
+            )
+            .take(4)
+    }
+
+    /**
+     * Summarizes today's verified work performance and net profit after costs.
+     */
+    fun summarizeShiftAndDailyPerformance(
+        todaySummary: EarningsSummaryMetrics,
+        activeSession: WorkSessionRecord?,
+        nowMillis: Long = System.currentTimeMillis()
+    ): ShiftPerformanceSummary {
+        val activeMinutes = activeSession?.durationMinutes(nowMillis) ?: 0
+        val totalMinutes = max((todaySummary.totalWorkHours * 60.0).roundToInt(), activeMinutes)
+
+        val message = when {
+            todaySummary.jobCount == 0 && todaySummary.totalExpenseBaht == 0.0 ->
+                "ยังไม่มีรายการรายได้หรือค่าใช้จ่ายวันนี้ — เริ่มรอบงานหรือสแกนออเดอร์เพื่อบันทึกผลงานจริง"
+            todaySummary.netProfitBaht < 0.0 ->
+                String.format(
+                    Locale.US,
+                    "วันนี้รายจ่ายสูงกว่ารายรับ ฿%.0f (ต้องเก็บอีก ฿%.0f เพื่อคุ้มทุน)",
+                    kotlin.math.abs(todaySummary.netProfitBaht),
+                    kotlin.math.abs(todaySummary.netProfitBaht)
+                )
+            todaySummary.isGoalReached ->
+                String.format(
+                    Locale.US,
+                    "ทำได้ %d งาน กำไรสุทธิ +฿%.0f ทะลุเป้ารายวันแล้ว (เฉลี่ย ฿%.1f/กม.)",
+                    todaySummary.jobCount,
+                    todaySummary.netProfitBaht,
+                    todaySummary.avgIncomePerKm
+                )
+            else ->
+                String.format(
+                    Locale.US,
+                    "ทำแล้ว %d งาน กำไรสุทธิ +฿%.0f เหลืออีก ฿%.0f ถึงเป้ารายวัน",
+                    todaySummary.jobCount,
+                    todaySummary.netProfitBaht,
+                    todaySummary.remainingToGoalBaht
+                )
+        }
+
+        return ShiftPerformanceSummary(
+            completedJobsToday = todaySummary.jobCount,
+            grossIncomeBaht = todaySummary.totalIncomeBaht,
+            fuelAndExpenseBaht = todaySummary.totalExpenseBaht,
+            netProfitBaht = todaySummary.netProfitBaht,
+            avgBahtPerKm = todaySummary.avgIncomePerKm,
+            avgBahtPerHour = todaySummary.avgIncomePerHour,
+            activeShiftMinutes = totalMinutes,
+            summaryMessageTh = message,
+            isVerifiedLocalData = true
+        )
     }
 }
